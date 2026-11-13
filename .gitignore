@@ -1,0 +1,23 @@
+.gradle/
+build/
+run/
+__pycache__/
+*.pyc
+*.sqlite*
+.env
+bridge/config.json
+
+# Local development records are not publication material.
+docs/evidence/
+docs/build-attempt.log
+docs/VALIDATION-*.md
+docs/RELEASE-REVIEW-0.5.1.md
+docs/screenshots/*
+!docs/screenshots/0.10.0-alpha-*.png
+# Retired Python bridge; the native/embedded Java host is the supported implementation.
+bridge/
+tests/
+tools/package_bridge.py
+tools/smoke_codex.py
+!docs/screenshots/0.11.0-alpha-*.png
+!docs/screenshots/0.11.1-alpha-*.png

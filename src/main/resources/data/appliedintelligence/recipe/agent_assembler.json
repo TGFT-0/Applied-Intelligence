@@ -1,0 +1,27 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "redstone",
+  "pattern": [
+    "IRI",
+    "PAP",
+    "IRI"
+  ],
+  "key": {
+    "I": {
+      "item": "minecraft:iron_ingot"
+    },
+    "R": {
+      "item": "minecraft:redstone"
+    },
+    "P": {
+      "item": "ae2:calculation_processor"
+    },
+    "A": {
+      "item": "ae2:molecular_assembler"
+    }
+  },
+  "result": {
+    "id": "appliedintelligence:agent_assembler",
+    "count": 1
+  }
+}

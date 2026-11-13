@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/cube_bottom_top",
+  "textures": {
+    "side": "ae2:block/pattern_provider_alternate_front",
+    "bottom": "ae2:block/pattern_provider",
+    "top": "minecraft:block/purple_stained_glass"
+  }
+}

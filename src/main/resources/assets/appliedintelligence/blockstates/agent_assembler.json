@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "appliedintelligence:block/agent_assembler"
+    }
+  }
+}

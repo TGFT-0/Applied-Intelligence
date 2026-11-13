@@ -1,0 +1,26 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="LGPL-3.0-only"
+[[mods]]
+modId="appliedintelligence"
+version="${mod_version}"
+displayName="Applied Intelligence"
+description='''Manage real agents from AE2 terminals.'''
+[[dependencies.appliedintelligence]]
+modId="neoforge"
+type="required"
+versionRange="[21.1.169,)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.appliedintelligence]]
+modId="minecraft"
+type="required"
+versionRange="[1.21.1]"
+ordering="NONE"
+side="BOTH"
+[[dependencies.appliedintelligence]]
+modId="ae2"
+type="required"
+versionRange="[19.2.19]"
+ordering="AFTER"
+side="BOTH"

@@ -1,0 +1,23 @@
+name: 问题反馈 / Bug report
+description: 报告游戏内问题，附复现步骤与截图。
+title: '[Bug] '
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 模组版本与系统 / Mod version and OS
+      placeholder: 0.5.1-alpha, Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤与期望结果 / Steps and expected result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 实际结果、截图与相关日志 / Actual result, screenshots and relevant logs
+    validations:
+      required: true

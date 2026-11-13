@@ -1,0 +1,45 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.moddev' version '2.0.74'
+}
+group = 'dev.tgft'
+version = '0.11.1-alpha'
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+neoForge {
+    version = project.neoforge_version
+    runs {
+        client { client() }
+        server { server(); programArgument '--nogui' }
+    }
+    mods { appliedintelligence { sourceSet sourceSets.main } }
+}
+repositories { mavenCentral(); maven { url = 'https://maven.appliedenergistics.org' } }
+dependencies { implementation "org.appliedenergistics:appliedenergistics2:${ae2_version}" }
+
+// Include the game version and loader so downloaded releases are unambiguous.
+tasks.named('jar', Jar) {
+    archiveFileName = "applied-intelligence-${project.version}-mc${project.minecraft_version}-neoforge.jar"
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'com.google.code.gson:gson:2.10.1'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+test {
+    useJUnitPlatform()
+    systemProperty 'ai.release.jar', layout.buildDirectory.file("libs/applied-intelligence-${project.version}-mc${project.minecraft_version}-neoforge.jar").get().asFile.absolutePath
+    environment 'AI_BRIDGE_TOKEN', 'fixture-not-a-credential'
+}
+
+// Distribution checks run locally and in GitHub Actions.
+tasks.named('jar', Jar) {
+    from(files('LICENSE', 'LICENSE-GSON.txt', 'LICENSE-T3CODE.txt', 'LICENSE-T3CODE-WOW.txt', 'LICENSE-PI.txt', 'LICENSE-OPENCODE.txt', 'LICENSE-DEEPSEEK-HARNESS.txt', 'THIRD_PARTY_NOTICES.md', 'SECURITY.md')) { into('META-INF') }
+}
+
+// Track the release version as an input; incremental builds must not retain old metadata.
+tasks.named('processResources') {
+    inputs.property 'mod_version', project.version
+    filesMatching('META-INF/neoforge.mods.toml') { expand mod_version: project.version }
+}
