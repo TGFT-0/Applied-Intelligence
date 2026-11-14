@@ -1,8 +1,8 @@
 # 远程控制 v2：设计草案与发布条件
 
-日期：2026-11-14。状态：**仅设计，尚未实现或通过安全验收**。当前发行版 0.11.1-alpha 继续仅支持本机；本文不恢复旧协议、旧 host 或旧配对凭据。
+日期：2026-11-14。状态：**传输原型已实现，产品功能尚未开放，也未通过发布安全验收**。当前发行版 0.11.1-alpha 继续仅支持本机；本文不恢复旧协议、旧 host 或旧配对凭据。
 
-English summary: This is a proposal, not an implemented feature. It proposes private-network TLS 1.3, mutual device authentication, local enrollment approval, per-job authorization, bounded resources, and verified worker isolation. Unsupported platform and CLI combinations remain disabled. The current release remains local-only.
+English summary: A loopback transport prototype now exists. The mod does not offer remote control. It proposes private-network TLS 1.3, mutual device authentication, local enrollment approval, per-job authorization, bounded resources, and verified worker isolation. Unsupported platform and CLI combinations remain disabled. The current release remains local-only.
 
 ## 1. 决策与范围
 
@@ -81,7 +81,7 @@ flowchart LR
 
 身份密钥与 Host 元数据须原子初始化并锁定单一实例；丢失或损坏时停止，不悄悄重建后沿用旧信任。Host 身份绑定公开密钥，不能用自报 UUID 覆盖。不要在两台执行电脑克隆同一身份；恢复身份备份后须本地重新批准设备授权。
 
-每个执行端首次显式配置时建立专用 CA/身份密钥；使用标准 X.509、PKCS#10 CSR、JCA/JSSE 和维护中的证书库，不自写密码算法、TLS、证书 DER 编码或 PAKE。HTTP 原型优先评估受维护的 Jetty 12 分支配合 JSSE；证书通过维护中的 X.509 库生成。具体依赖版本必须在原型阶段检查维护状态、漏洞公告、许可证并锁定校验值，尚未选定可发布版本。
+每个执行端首次显式配置时建立专用 CA/身份密钥；使用标准 X.509、PKCS#10 CSR、JCA/JSSE 和维护中的证书库，不自写密码算法、TLS、证书 DER 编码或 PAKE。传输原型使用 Jetty 12.1.15 / JSSE 和 Bouncy Castle 1.87，结构化消息使用 Jackson 2.23.0。原型固定了依赖版本和 SHA-256，并记录了许可证与漏洞查询。它们尚不是获准随模组发布的远程依赖。
 
 邀请携带公开 CA 证书；客户端把它安装到**该执行端配置专用**的信任库。正常连接同时验证受信任证书链、用途、有效期、地址对应的 SAN 和已固定的身份。不得使用 trust-all、全局关闭 hostname verification 或修改系统信任库。
 
@@ -158,6 +158,7 @@ worker 网络按执行配置限制；控制身份密钥不可从 worker 文件�
 ## 7. 持久化、断线与撤销
 
 - 执行端先持久化接单和启动意图，再启动 worker。崩溃边界无法确定是否已执行时显示 unknown/interrupted，不自动重跑模型，不承诺 exactly-once。
+- 工单属于执行端独立进程，不属于某条 TLS、HTTP、SSE 或 SSH 会话。短暂卡网、心跳丢失、关闭控制窗口或退出控制端游戏都不取消任务。断线期间继续执行，恢复连接后查询原工单与进度。执行端关闭、显式取消、撤销授权及执行时限才可以终止任务。
 - 重连始终回到原 Host 身份与工单。无回复不是失败重跑的理由，不自动切换其他机器或本机。需要重新执行时由玩家明确下新单。
 - 世界里只保存非秘密的目标引用和工单 ID；设备密钥和授权存放在电脑本地。导入世界或 NBT 不会自动连接、授权或启用分享；每次世界会话需要私人世界主人显式连接。
 - 打开局域网或进入多人模式后停止控制端远程操作。尚不设计多人授予权、转授予权或客户端自报管理员身份。
@@ -232,4 +233,10 @@ T3 当前也保留某些明文 LAN 路径；本方案不采用这些路径。检
 3. 接持久工单、权限、事件、问答与图片，再接 AE2 UI 和同 JAR 的进程生命周期。
 4. 完成攻击性测试、真实两机验收及独立评审，再决定是否发布新 Alpha。不得复活被撤回的旧 JAR 或旧协议。
 
-未决项包括：证书/HTTP 库及版本、各 OS 的密钥与进程隔离实现、四种 CLI 登录方式的凭据隔离能力、网络资源上限的压测结果。它们是实施阻碍，不是用“内网可信”或“只读”跳过的事项。
+### 第一阶段进展（2026-11-14）
+
+独立原型位于 [`prototypes/secure-transport`](../../prototypes/secure-transport/README.md)。28 项自动化测试使用真实回环 TLS、临时证书和模拟任务。覆盖接单后丢确认、断线继续执行、同 ID 重连不重跑、撤销、重启中断、慢请求、错误证书及密文检查。原型无启动入口、无可分发 JAR、不接真实目录或 CLI，根模组打包检查排除原型类及其依赖。
+
+Linux namespace / bubblewrap 的一次无模型启动探测成功。这只证明工具可启动，不证明文件、凭据、进程与网络隔离合格。尚未接入生产 worker，也未做真实两机测试或独立评审。
+
+未决项包括：各 OS 的私钥与进程隔离实现、四种 CLI 登录方式的凭据隔离能力、完整限流、网络资源上限的压测结果。它们是实施阻碍，不是用“内网可信”或“只读”跳过的事项。

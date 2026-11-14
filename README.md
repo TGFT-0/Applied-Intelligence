@@ -2,7 +2,7 @@
 
 **远程功能暂时移除。0.10.0-alpha 和 0.11.0-alpha 已撤回，请停止旧 Agent host，并替换为仅支持本机的 0.11.1-alpha。**
 
-[远程控制重新设计（草案，尚未实现）](docs/design/REMOTE-CONTROL-V2.md)
+[远程控制重新设计（已有传输原型，暂未开放）](docs/design/REMOTE-CONTROL-V2.md)
 
 在你的ME终端里管理你的agent工作！
 像原版一样下单 查看工作进度 切换cpu（agent）！

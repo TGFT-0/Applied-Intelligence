@@ -33,7 +33,7 @@ with zipfile.ZipFile(jar) as archive:
     for adapter in ('AgentBackend', 'AgentSession', 'PiSession', 'AcpSession', 'OpenCodeSession'):
         assert f'dev/tgft/appliedintelligence/local/{adapter}.class' in names, 'Agent adapter missing'
     assert b'Main-Class:' not in archive.read('META-INF/MANIFEST.MF'), 'Standalone entry point must be absent'
-    assert not any(n.startswith(('dev/tgft/appliedintelligence/remote/', 'dev/tgft/appliedintelligence/launcher/')) or n.endswith('agent-host.jar') or 'ConnectionSettingsScreen' in n for n in names), 'Remote capability included'
+    assert not any(n.startswith(('dev/tgft/appliedintelligence/remote/', 'dev/tgft/appliedintelligence/launcher/', 'dev/tgft/appliedintelligence/prototype/', 'org/eclipse/jetty/', 'org/bouncycastle/', 'com/fasterxml/')) or n.endswith('agent-host.jar') or 'ConnectionSettingsScreen' in n for n in names), 'Remote capability included'
     assert 'dev/tgft/appliedintelligence/local/LocalAgentService.class' in names, 'Local world archive missing'
     for name in names:
         if name.startswith('dev/tgft/appliedintelligence/') and name.endswith('.class'):
