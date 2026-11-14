@@ -2,6 +2,8 @@
 
 **Remote access is temporarily removed. Releases 0.10.0-alpha and 0.11.0-alpha are withdrawn. Stop the old Agent host. Use local-only 0.11.1-alpha.**
 
+[Remote-control redesign (proposal, not implemented)](docs/design/REMOTE-CONTROL-V2.md)
+
 Manage your Agent tasks right from your ME Terminal!
 Place orders just like in vanilla AE2, track progress, and switch CPUs (Agents)!
 Inspired by [T3Code](https://github.com/pingdotgg/t3code) and [T3-wow](https://github.com/ryanrhughes/t3code-wow).
