@@ -619,6 +619,100 @@ class TransportTest {
         payload);
   }
 
+  @Test
+  void expirationCancelsRunningJobDurablyAndFreesTheWorker() throws Exception {
+    try (var store = new GrantStore(directory.resolve("expiry"), "host")) {
+      store.grant(new GrantStore.Grant("first", "cert", Set.of("observe", "simulate"), 10, false), 0);
+      store.grant(new GrantStore.Grant("second", "cert", Set.of("observe", "simulate"), 100, false), 0);
+      String id = UUID.randomUUID().toString();
+      store.submit("first", id, "fake", 0);
+      assertFalse(store.tick("first", id, 10));
+      var saved = Wire.read(Files.readAllBytes(store.file), GrantStore.State.class);
+      assertEquals("cancelled", saved.jobs().get("first:" + id).state());
+      assertEquals("running", store.submit("second", UUID.randomUUID().toString(), "fake", 10).state());
+    }
+  }
+
+  @Test
+  void fullHistoryEvictsOldestTerminalJobAfterIdempotencyCheck() throws Exception {
+    Path path = directory.resolve("history");
+    var jobs = new LinkedHashMap<String, GrantStore.Job>();
+    String first = UUID.randomUUID().toString();
+    for (int i = 0; i < 128; i++) {
+      String id = i == 0 ? first : UUID.randomUUID().toString();
+      jobs.put("device:" + id, new GrantStore.Job("device", id,
+          Wire.hash("fake".getBytes(StandardCharsets.UTF_8)),
+          List.of("completed", "cancelled", "interrupted").get(i % 3), 1, 20));
+    }
+    try (var store = new GrantStore(path, "host")) {
+      store.grant(new GrantStore.Grant("device", "cert", Set.of("observe", "simulate"), 100, false), 0);
+    }
+    var initial = Wire.read(Files.readAllBytes(path.resolve("state.json")), GrantStore.State.class);
+    Files.write(path.resolve("state.json"), Wire.bytes(new GrantStore.State("host", initial.grants(), jobs)));
+    try (var store = new GrantStore(path, "host")) {
+      assertEquals(first, store.submit("device", first, "fake", 0).id());
+      String next = UUID.randomUUID().toString();
+      store.submit("device", next, "fake", 0);
+      var saved = Wire.read(Files.readAllBytes(store.file), GrantStore.State.class);
+      assertEquals(128, saved.jobs().size());
+      assertFalse(saved.jobs().containsKey("device:" + first));
+      assertEquals("job_limit", assertThrows(Wire.Fault.class,
+          () -> store.submit("device", UUID.randomUUID().toString(), "fake", 0)).code);
+    }
+  }
+
+  @Test
+  void fullGrantTableReclaimsExpiredAndRevokedDevicesButKeepsLiveOnes() throws Exception {
+    try (var store = new GrantStore(directory.resolve("grants"), "host")) {
+      for (int i = 0; i < 32; i++)
+        store.grant(new GrantStore.Grant("device" + i, "cert", Set.of("observe"), 100, false), 0);
+      assertEquals("device_limit", assertThrows(Wire.Fault.class,
+          () -> store.grant(new GrantStore.Grant("extra", "cert", Set.of("observe"), 200, false), 0)).code);
+      store.revoke("device0");
+      store.grant(new GrantStore.Grant("extra", "cert", Set.of("observe"), 200, false), 0);
+      var saved = Wire.read(Files.readAllBytes(store.file), GrantStore.State.class);
+      assertEquals(32, saved.grants().size());
+      assertFalse(saved.grants().containsKey("device0"));
+      store.grant(new GrantStore.Grant("later", "cert", Set.of("observe"), 300, false), 100);
+      saved = Wire.read(Files.readAllBytes(store.file), GrantStore.State.class);
+      assertEquals(Set.of("extra", "later"), saved.grants().keySet());
+    }
+  }
+
+  @Test
+  void persistedStateRespectsReaderLimitAndExistingFileMustBePrivate() throws Exception {
+    Path path = directory.resolve("bounded");
+    try (var store = new GrantStore(path, "host")) {
+      for (int i = 0; i < 8; i++)
+        store.grant(new GrantStore.Grant("device" + i, "x".repeat(32000), Set.of("observe"), 100, false), 0);
+      assertThrows(IOException.class, () -> store.grant(
+          new GrantStore.Grant("overflow", "x".repeat(32000), Set.of("observe"), 100, false), 0));
+    }
+    try (var store = new GrantStore(path, "host")) {
+      assertEquals(8, Wire.read(Files.readAllBytes(store.file), GrantStore.State.class).grants().size());
+    }
+    Files.setPosixFilePermissions(path.resolve("state.json"),
+        java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
+    assertThrows(IOException.class, () -> new GrantStore(path, "host"));
+  }
+
+  @Test
+  void slowEnrollmentBodyDoesNotBlockApproval() throws Exception {
+    var client = pending();
+    var endpoint = URI.create(client.invitation.enroll());
+    try (var socket = (SSLSocket) client.enrollment.sslContext().getSocketFactory()
+        .createSocket("127.0.0.1", endpoint.getPort())) {
+      socket.startHandshake();
+      socket.getOutputStream().write(("POST /enroll HTTP/1.1\r\nHost: 127.0.0.1:"
+          + endpoint.getPort() + "\r\nContent-Type: application/json\r\nContent-Length: 10000\r\n\r\n{")
+          .getBytes(StandardCharsets.US_ASCII));
+      socket.getOutputStream().flush();
+      Thread.sleep(100);
+      assertTimeoutPreemptively(Duration.ofSeconds(1),
+          () -> host.approve(Pki.fingerprint(client.key.getPublic()), Set.of("observe")));
+    }
+  }
+
   private static void capturedPost(
       HttpClient client, URI endpoint, String path, Object body, String secret) throws Exception {
     var recorded = new ByteArrayOutputStream();

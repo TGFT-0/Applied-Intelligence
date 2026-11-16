@@ -460,6 +460,55 @@ class LocalCodexTest {
   }
 
   @Test
+  void blockedAnswerDoesNotHoldRunnerLockOrPreventCancellation() throws Exception {
+    ready();
+    String id = service.dispatch("submit", request("ASK_FIXTURE")).get("id").getAsString();
+    var question = waitQuestion(id);
+    var jobsField = LocalCodex.class.getDeclaredField("jobs");
+    jobsField.setAccessible(true);
+    Object internal = ((Map<?, ?>) jobsField.get(service)).get(id);
+    var serverField = internal.getClass().getDeclaredField("server");
+    serverField.setAccessible(true);
+    var entered = new CountDownLatch(1);
+    var release = new CountDownLatch(1);
+    var lockField = LocalCodex.class.getDeclaredField("lock");
+    lockField.setAccessible(true);
+    synchronized (lockField.get(service)) {
+      serverField.set(internal, new AgentSession() {
+        public Result run(String cwd, String prompt) { throw new AssertionError(); }
+        public void answer(JsonElement rpc, JsonObject response) throws java.io.IOException {
+          entered.countDown();
+          try {
+            if (!release.await(5, TimeUnit.SECONDS)) throw new java.io.IOException("timeout");
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new java.io.IOException(e);
+          }
+        }
+        public CompletableFuture<Steering> steer(String request, String turn, String text) {
+          throw new AssertionError();
+        }
+      });
+    }
+    var answering = new FutureTask<>(() -> service.dispatch("answer_job", answer(id, question)));
+    Thread.ofVirtual().start(answering);
+    try {
+      assertTrue(entered.await(2, TimeUnit.SECONDS));
+      assertTimeoutPreemptively(Duration.ofSeconds(1), () -> {
+        assertNotNull(call("local_settings"));
+        var cancel = new JsonObject();
+        cancel.addProperty("id", id);
+        service.dispatch("cancel_job", cancel);
+        assertEquals("cancelled", job(id).get("state").getAsString());
+      });
+    } finally {
+      release.countDown();
+    }
+    assertEquals(question.get("request"), answering.get(2, TimeUnit.SECONDS).get("answer_ack"));
+    assertEquals("cancelled", job(id).get("state").getAsString());
+  }
+
+  @Test
   void anOldAnswerCannotResolveTheNextQuestion() throws Exception {
     ready();
     var data = request("ASK_FIXTURE ASK_TWICE");

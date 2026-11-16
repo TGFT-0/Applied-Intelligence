@@ -7,6 +7,11 @@ public final class ReportPages {
   private ReportPages() {}
 
   public static List<String> split(String text) {
+    return split(text, 100);
+  }
+
+  static List<String> split(String text, int maxPages) {
+    if (maxPages < 1 || maxPages > 100) throw new IllegalArgumentException("page limit");
     List<String> pages = new ArrayList<>();
     StringBuilder page = new StringBuilder();
     int lineWidth = 0, lines = 1;
@@ -18,6 +23,10 @@ public final class ReportPages {
       if (cp == '\n' || lineWidth + width > 18) {
         if (lines >= 12) {
           pages.add(page.toString());
+          if (pages.size() == maxPages) {
+            pages.set(maxPages - 1, "[truncated]");
+            return List.copyOf(pages);
+          }
           page.setLength(0);
           lines = 1;
         } else {

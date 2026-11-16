@@ -48,8 +48,13 @@ final class GrantStore implements AutoCloseable {
       acquired = ownership.tryLock();
       if (acquired == null) throw new IOException("State directory busy");
       if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
-        if (Files.isSymbolicLink(file) || Files.size(file) > 1048576)
+        if (Files.isSymbolicLink(file) || Files.size(file) > Wire.MAX_DOCUMENT_BYTES)
           throw new IOException("Invalid state");
+        var permissions = Files.getFileAttributeView(file, PosixFileAttributeView.class);
+        if (permissions != null)
+          for (var p : permissions.readAttributes().permissions())
+            if (p.name().startsWith("GROUP_") || p.name().startsWith("OTHERS_"))
+              throw new IOException("State file is not private");
         state = Wire.read(Files.readAllBytes(file), State.class);
         if (state == null
             || !host.equals(state.host)
@@ -78,7 +83,8 @@ final class GrantStore implements AutoCloseable {
     Path temp = null;
     try {
       byte[] value = Wire.bytes(next);
-      if (value.length > 1048576) throw new IOException("State full");
+      if (value.length > Wire.MAX_DOCUMENT_BYTES) throw new IOException("State full");
+      Wire.read(value, State.class);
       temp =
           Files.createTempFile(
               directory,
@@ -110,11 +116,17 @@ final class GrantStore implements AutoCloseable {
   }
 
   synchronized void grant(Grant grant) throws IOException {
+    grant(grant, System.currentTimeMillis());
+  }
+
+  synchronized void grant(Grant grant, long now) throws IOException {
     if (!Set.of("observe", "simulate").containsAll(grant.scopes)
         || !grant.scopes.contains("observe")) throw new Wire.Fault(400, "invalid_scope");
-    if (state.grants.size() >= 32 && !state.grants.containsKey(grant.fingerprint))
-      throw new Wire.Fault(429, "device_limit");
     var grants = new LinkedHashMap<>(state.grants);
+    if (grants.size() >= 32 && !grants.containsKey(grant.fingerprint)) {
+      grants.values().removeIf(g -> now >= g.until || g.revoked || g.scopes.isEmpty());
+      if (grants.size() >= 32) throw new Wire.Fault(429, "device_limit");
+    }
     grants.put(grant.fingerprint, grant);
     persist(new State(state.host, grants, state.jobs));
   }
@@ -156,12 +168,17 @@ final class GrantStore implements AutoCloseable {
       if (!old.payloadHash.equals(hash)) throw new Wire.Fault(409, "id_conflict");
       return old;
     }
-    if (state.jobs.size() >= 128
-        || state.jobs.values().stream().anyMatch(j -> j.state.equals("running")))
+    if (state.jobs.values().stream().anyMatch(j -> j.state.equals("running")))
       throw new Wire.Fault(429, "job_limit");
     // Durable launch intent precedes the mock worker. Restart never replays it.
     var job = new Job(device, id, hash, "running", 1, 0);
     var jobs = new LinkedHashMap<>(state.jobs);
+    var history = jobs.entrySet().iterator();
+    while (jobs.size() >= 128 && history.hasNext()) {
+      if (Set.of("completed", "cancelled", "interrupted").contains(history.next().getValue().state))
+        history.remove();
+    }
+    if (jobs.size() >= 128) throw new Wire.Fault(429, "job_limit");
     jobs.put(k, job);
     persist(new State(state.host, state.grants, jobs));
     return job;
@@ -179,6 +196,13 @@ final class GrantStore implements AutoCloseable {
     try {
       require(device, "simulate", now);
     } catch (Wire.Fault e) {
+      var old = state.jobs.get(key(device, id));
+      if (old != null && old.state.equals("running")) {
+        var jobs = new LinkedHashMap<>(state.jobs);
+        jobs.put(key(device, id),
+            new Job(old.owner, old.id, old.payloadHash, "cancelled", old.executions, old.ticks));
+        persist(new State(state.host, state.grants, jobs));
+      }
       return false;
     }
     var old = state.jobs.get(key(device, id));

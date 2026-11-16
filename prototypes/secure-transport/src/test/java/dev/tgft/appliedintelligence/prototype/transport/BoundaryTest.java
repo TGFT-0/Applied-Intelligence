@@ -5,10 +5,17 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.time.*;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import javax.net.ssl.*;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.*;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.junit.jupiter.api.*;
 
 class BoundaryTest {
@@ -50,6 +57,71 @@ class BoundaryTest {
               } catch (IOException | InterruptedException closed) {
               }
             });
+  }
+
+  @Test
+  void literalNullJsonIsAnInvalidRequest() {
+    var failure = assertThrows(Wire.Fault.class,
+        () -> Wire.read("null".getBytes(StandardCharsets.UTF_8), SecureHost.Enrollment.class));
+    assertEquals(400, failure.status);
+    assertEquals("invalid_request", failure.code);
+  }
+
+  @Test
+  void clientRejectsMissingCertificateUsagesAndInvalidAnchorsWithoutNullPointer() throws Exception {
+    var invitation = new SecureHost.Invitation("ai-remote-v2-prototype",
+        "https://127.0.0.1:1", "https://127.0.0.1:2",
+        Base64.getEncoder().encodeToString(pki.ca.chain[0].getEncoded()), Wire.random());
+    try (var client = new DeviceClient(invitation)) {
+      for (String missing : List.of("eku", "usage", "constraints")) {
+        var builder = new JcaX509v3CertificateBuilder(
+            pki.ca.chain[0], Pki.serial(), Date.from(Instant.now().minusSeconds(60)),
+            Date.from(Instant.now().plusSeconds(3600)),
+            new X500Name("CN=device"), client.key.getPublic());
+        if (!missing.equals("constraints")) builder.addExtension(
+            Extension.basicConstraints, true,
+            new BasicConstraints(false));
+        if (!missing.equals("usage")) builder.addExtension(
+            Extension.keyUsage, true,
+            new KeyUsage(KeyUsage.digitalSignature));
+        if (!missing.equals("eku")) builder.addExtension(
+            Extension.extendedKeyUsage, false,
+            new ExtendedKeyUsage(
+                KeyPurposeId.id_kp_clientAuth));
+        var certificate = builder.build(new JcaContentSignerBuilder(
+            "SHA256withECDSA").build(pki.ca.keys.getPrivate()));
+        byte[] reply = Wire.bytes(new SecureHost.EnrollmentReply("approved",
+            Pki.fingerprint(client.key.getPublic()),
+            Base64.getEncoder().encodeToString(certificate.getEncoded())));
+        assertThrows(IllegalArgumentException.class,
+            () -> client.accept(new DeviceClient.Reply(200, reply, null)));
+      }
+    }
+    for (String invalid : List.of("signature", "usage", "curve")) {
+      var keys = Pki.key();
+      if (invalid.equals("curve")) {
+        var generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(new ECGenParameterSpec("secp384r1"));
+        keys = generator.generateKeyPair();
+      }
+      var subject = new X500Name("CN=anchor");
+      var builder = new JcaX509v3CertificateBuilder(
+          subject, Pki.serial(), Date.from(Instant.now().minusSeconds(60)),
+          Date.from(Instant.now().plusSeconds(3600)), subject, keys.getPublic());
+      builder.addExtension(Extension.basicConstraints, true,
+          new BasicConstraints(0));
+      builder.addExtension(Extension.keyUsage, true,
+          new KeyUsage(invalid.equals("usage")
+              ? KeyUsage.digitalSignature
+              : KeyUsage.keyCertSign));
+      var certificate = builder.build(new JcaContentSignerBuilder(
+          "SHA256withECDSA").build(invalid.equals("signature")
+              ? Pki.key().getPrivate() : keys.getPrivate()));
+      var bad = new SecureHost.Invitation(invitation.version(), invitation.enroll(), invitation.control(),
+          Base64.getEncoder().encodeToString(certificate.getEncoded()), invitation.secret());
+      var failure = assertThrows(Exception.class, () -> new DeviceClient(bad));
+      assertFalse(failure instanceof NullPointerException);
+    }
   }
 
   @Test

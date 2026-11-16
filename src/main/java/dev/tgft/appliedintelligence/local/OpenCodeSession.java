@@ -233,7 +233,7 @@ final class OpenCodeSession implements AgentSession {
       create.add("location", location);
       var permissions = new JsonArray();
       for (String action :
-          List.of("*", "read", "glob", "grep", "list", "question", "webfetch", "websearch")) {
+          List.of("*", "read", "glob", "grep", "list", "question")) {
         var rule = new JsonObject();
         rule.addProperty("action", action);
         rule.addProperty("resource", "*");

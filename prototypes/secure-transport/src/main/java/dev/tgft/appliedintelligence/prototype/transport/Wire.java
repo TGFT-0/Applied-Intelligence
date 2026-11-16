@@ -8,6 +8,8 @@ import java.security.*;
 import java.util.*;
 
 final class Wire {
+  static final int MAX_DOCUMENT_BYTES = 262144;
+
   static final ObjectMapper JSON =
       JsonMapper.builder(
               JsonFactory.builder()
@@ -17,7 +19,7 @@ final class Wire {
                           .maxNestingDepth(8)
                           .maxStringLength(32768)
                           .maxNumberLength(20)
-                          .maxDocumentLength(262144)
+                          .maxDocumentLength(MAX_DOCUMENT_BYTES)
                           .build())
                   .build())
           .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
@@ -31,7 +33,10 @@ final class Wire {
   }
 
   static <T> T read(byte[] value, Class<T> type) throws IOException {
-    return JSON.readValue(value, type);
+    if (value.length > MAX_DOCUMENT_BYTES) throw new Fault(400, "invalid_request");
+    T result = JSON.readValue(value, type);
+    if (result == null) throw new Fault(400, "invalid_request");
+    return result;
   }
 
   static String hash(byte[] value) {

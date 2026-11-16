@@ -186,6 +186,11 @@ class OtherAgentsTest {
     publicOnly(record);
     var create =
         JsonParser.parseString(Files.readString(root.resolve("create.json"))).getAsJsonObject();
+    for (var permission : create.getAsJsonArray("permissions")) {
+      var rule = permission.getAsJsonObject();
+      assertFalse(rule.get("effect").getAsString().equals("allow")
+          && java.util.Set.of("webfetch", "websearch").contains(rule.get("action").getAsString()));
+    }
     assertEquals(
         "deny",
         create.getAsJsonArray("permissions").get(0).getAsJsonObject().get("effect").getAsString());

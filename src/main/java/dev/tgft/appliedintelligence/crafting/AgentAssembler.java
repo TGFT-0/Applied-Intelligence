@@ -221,7 +221,14 @@ public final class AgentAssembler extends BlockEntity implements ICraftingMachin
   }
 
   public void dropContents() {
-    releaseRecord(owner());
+    var owner = owner();
+    if (owner != null && !job.isBlank()
+        && (phase.equals("new") || phase.equals("dispatch") || phase.equals("working"))) {
+      var request = new JsonObject();
+      request.addProperty("id", job);
+      NativeAgents.dispatch(owner, "cancel_job", request);
+    }
+    releaseRecord(owner);
     if (!pattern.isEmpty()) {
       ItemStack drop;
       try {

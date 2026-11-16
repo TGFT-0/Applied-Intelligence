@@ -67,6 +67,7 @@ public final class LocalCodex implements AutoCloseable {
     String turn = "";
     Map<String, SteerReceipt> steering = new LinkedHashMap<>();
     Map<String, String> answerReceipts = new LinkedHashMap<>();
+    transient boolean answering;
     transient AgentSession server;
     transient JsonElement rpcQuestion;
     transient long deadline, waitingSince;
@@ -181,6 +182,7 @@ public final class LocalCodex implements AutoCloseable {
 
   /** Called off the Minecraft server thread. Only its private-world owner may reach this method. */
   public JsonObject dispatch(String action, JsonObject data) {
+    if (action.equals("answer_job")) return answer(data);
     synchronized (lock) {
       if (closed) throw new Failure("local_closed");
       switch (action) {
@@ -211,9 +213,6 @@ public final class LocalCodex implements AutoCloseable {
         }
         case "steer_job" -> {
           return steer(data);
-        }
-        case "answer_job" -> {
-          return answer(data);
         }
         case "cancel_job" -> {
           Job job = jobs.get(data.get("id").getAsString());
@@ -554,7 +553,7 @@ public final class LocalCodex implements AutoCloseable {
     Path script = path.getParent().resolve(entry);
     if (!Files.isRegularFile(script)) throw new Failure("local_launcher_unsupported");
     Path node = path.getParent().resolve("node.exe");
-    if (!Files.isRegularFile(node)) node = findExecutable("node", true);
+    if (!Files.isRegularFile(node)) node = findExecutable("node.exe", false);
     return List.of(node.toString(), script.toString());
   }
 
@@ -570,7 +569,7 @@ public final class LocalCodex implements AutoCloseable {
       Path script = path.getParent().resolve("node_modules/@openai/codex/bin/codex.js");
       if (!Files.isRegularFile(script)) throw new Failure("local_launcher_unsupported");
       Path node = path.getParent().resolve("node.exe");
-      if (!Files.isRegularFile(node)) node = findExecutable("node", true);
+      if (!Files.isRegularFile(node)) node = findExecutable("node.exe", false);
       return List.of(node.toString(), script.toString());
     }
     return List.of(path.toString());
@@ -709,7 +708,7 @@ public final class LocalCodex implements AutoCloseable {
         || job.server == null
         || job.turn.isBlank()
         || !job.turn.equals(turn)) throw new Failure("steer_inactive");
-    if (job.question != null) throw new Failure("steer_answer_first");
+    if (job.question != null || job.answering) throw new Failure("steer_answer_first");
     if (job.steering.values().stream().anyMatch(r -> r.state.equals("pending")))
       throw new Failure("steer_pending");
     // Keep every receipt for this live turn: a retry must never be forwarded a second time.
@@ -736,45 +735,75 @@ public final class LocalCodex implements AutoCloseable {
   }
 
   private JsonObject answer(JsonObject data) {
-    Job job = jobs.get(data.get("id").getAsString());
-    String request = data.get("request").getAsString();
-    JsonObject answers = data.getAsJsonObject("answers");
-    String digest;
-    try {
-      digest = AgentQuestion.digest(answers);
-    } catch (RuntimeException e) {
-      throw new Failure("question_invalid_answer");
+    Job job;
+    synchronized (lock) {
+      if (closed) throw new Failure("local_closed");
+      job = jobs.get(data.get("id").getAsString());
+      if (job == null) throw new Failure("question_expired");
     }
-    if (job == null) throw new Failure("question_expired");
-    if (job.answerReceipts.containsKey(request)) {
-      if (!job.answerReceipts.get(request).equals(digest)) throw new Failure("request_conflict");
-    } else {
-      if (!job.state.equals("running")
-          || job.question == null
-          || job.server == null
-          || !job.question.request().equals(request)) throw new Failure("question_expired");
-      JsonObject response;
+    // Serialize retries for this job without holding the runner lock during backend I/O.
+    synchronized (job) {
+      String request = data.get("request").getAsString();
+      JsonObject answers = data.getAsJsonObject("answers");
+      String digest;
       try {
-        response = job.question.validateAnswers(answers);
+        digest = AgentQuestion.digest(answers);
       } catch (RuntimeException e) {
         throw new Failure("question_invalid_answer");
       }
-      try {
-        job.server.answer(job.rpcQuestion, response);
-      } catch (IOException e) {
-        throw new Failure("question_expired");
+      AgentSession server;
+      AgentQuestion question;
+      JsonElement rpc;
+      JsonObject response;
+      synchronized (lock) {
+        if (closed) throw new Failure("local_closed");
+        if (job.answerReceipts.containsKey(request)) {
+          if (!job.answerReceipts.get(request).equals(digest)) throw new Failure("request_conflict");
+          var result = new JsonObject();
+          result.addProperty("answer_ack", request);
+          return result;
+        }
+        if (!job.state.equals("running") || job.question == null || job.server == null
+            || !job.question.request().equals(request)) throw new Failure("question_expired");
+        question = job.question;
+        try {
+          response = question.validateAnswers(answers);
+        } catch (RuntimeException e) {
+          throw new Failure("question_invalid_answer");
+        }
+        server = job.server;
+        rpc = job.rpcQuestion;
+        job.answering = true;
+        job.deadline += System.nanoTime() - job.waitingSince;
+        job.question = null;
       }
-      job.answerReceipts.put(request, digest);
-      if (job.answerReceipts.size() > 32)
-        job.answerReceipts.remove(job.answerReceipts.keySet().iterator().next());
-      job.deadline += System.nanoTime() - job.waitingSince;
-      job.question = null;
-      event(job, "question.answered");
-      persist();
+      try {
+        server.answer(rpc, response);
+      } catch (IOException | RuntimeException e) {
+        synchronized (lock) {
+          if (job.state.equals("running") && job.question == null
+              && Objects.equals(job.rpcQuestion, rpc)) {
+            job.question = question;
+            job.waitingSince = System.nanoTime();
+          }
+        }
+        throw new Failure("question_expired");
+      } finally {
+        synchronized (lock) {
+          job.answering = false;
+        }
+      }
+      synchronized (lock) {
+        job.answerReceipts.put(request, digest);
+        if (job.answerReceipts.size() > 32)
+          job.answerReceipts.remove(job.answerReceipts.keySet().iterator().next());
+        event(job, "question.answered");
+        if (!closed) persist();
+      }
+      var result = new JsonObject();
+      result.addProperty("answer_ack", request);
+      return result;
     }
-    var result = new JsonObject();
-    result.addProperty("answer_ack", request);
-    return result;
   }
 
   private void run(Job job, Config captured) {
@@ -895,11 +924,14 @@ public final class LocalCodex implements AutoCloseable {
 
             public void resolved(JsonElement rpcId) {
               synchronized (lock) {
-                if (job.question != null && Objects.equals(job.rpcQuestion, rpcId)) {
-                  job.deadline += System.nanoTime() - job.waitingSince;
-                  job.question = null;
-                  LocalCodex.this.event(job, "question.resolved");
-                  persist();
+                if (Objects.equals(job.rpcQuestion, rpcId)) {
+                  job.rpcQuestion = null;
+                  if (job.question != null) {
+                    job.deadline += System.nanoTime() - job.waitingSince;
+                    job.question = null;
+                    LocalCodex.this.event(job, "question.resolved");
+                    persist();
+                  }
                 }
               }
             }

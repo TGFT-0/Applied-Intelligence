@@ -114,11 +114,11 @@ final class SecureHost implements AutoCloseable {
             pki.certificate(
                 tls.peerCertificates()[0].getPublicKey(),
                 true,
-                Instant.now().minusSeconds(60),
-                Instant.ofEpochMilli(g.until()),
+                clock.instant().minusSeconds(60),
+                Instant.ofEpochMilli(Math.min(g.until(), pki.ca.chain[0].getNotAfter().getTime())),
                 null);
         String encoded = Base64.getEncoder().encodeToString(cert.getEncoded());
-        store.grant(new GrantStore.Grant(owner, encoded, g.scopes(), g.until(), false));
+        store.grant(new GrantStore.Grant(owner, encoded, g.scopes(), g.until(), false), clock.millis());
         Boundary.reply(response, callback, 200, new EnrollmentReply("renewed", owner, encoded));
       }
       return true;
@@ -224,35 +224,44 @@ final class SecureHost implements AutoCloseable {
           secret);
     }
 
-    synchronized boolean handle(Request request, Response response, Callback callback)
+    boolean handle(Request request, Response response, Callback callback)
         throws Exception {
       if (!request.getHttpURI().getPath().equals("/enroll")) throw new Wire.Fault(404, "not_found");
-      var enrollment = Wire.read(boundary.body(request, 16384), Enrollment.class);
-      if (stopped.get()
-          || clock.millis() >= expires
-          || approved && clock.millis() >= deliveredUntil
-          || enrollment.secret == null
-          || enrollment.secret.length() > 100
-          || !Wire.same(
-              secretHash,
-              Wire.hash(enrollment.secret.getBytes(java.nio.charset.StandardCharsets.UTF_8))))
-        throw new Wire.Fault(403, "invalid_invitation");
-      byte[] der = Base64.getDecoder().decode(enrollment.csr);
-      PublicKey candidate = Pki.verifyCsr(der);
-      String hash = Wire.hash(der);
-      if (!csrHash.isEmpty() && !csrHash.equals(hash))
-        throw new Wire.Fault(409, "different_pending_device");
-      if (csrHash.isEmpty()) {
-        csrHash = hash;
-        key = candidate;
-        pendingFingerprint = Pki.fingerprint(candidate);
+      synchronized (this) {
+        checkOpen();
       }
-      Boundary.reply(
-          response,
-          callback,
-          200,
-          new EnrollmentReply(approved ? "approved" : "pending", pendingFingerprint, certificate));
-      return true;
+      var enrollment = Wire.read(boundary.body(request, 16384), Enrollment.class);
+      synchronized (this) {
+        checkOpen();
+        if (enrollment.secret == null
+            || enrollment.secret.length() > 100
+            || !Wire.same(
+                secretHash,
+                Wire.hash(enrollment.secret.getBytes(java.nio.charset.StandardCharsets.UTF_8))))
+          throw new Wire.Fault(403, "invalid_invitation");
+        byte[] der = Base64.getDecoder().decode(enrollment.csr);
+        PublicKey candidate = Pki.verifyCsr(der);
+        String hash = Wire.hash(der);
+        if (!csrHash.isEmpty() && !csrHash.equals(hash))
+          throw new Wire.Fault(409, "different_pending_device");
+        if (csrHash.isEmpty()) {
+          csrHash = hash;
+          key = candidate;
+          pendingFingerprint = Pki.fingerprint(candidate);
+        }
+        Boundary.reply(
+            response,
+            callback,
+            200,
+            new EnrollmentReply(approved ? "approved" : "pending", pendingFingerprint, certificate));
+        return true;
+      }
+    }
+
+    private void checkOpen() {
+      if (stopped.get() || clock.millis() >= expires
+          || approved && clock.millis() >= deliveredUntil)
+        throw new Wire.Fault(403, "invalid_invitation");
     }
 
     synchronized void approve(String expected, Set<String> scopes) throws Exception {
@@ -261,16 +270,24 @@ final class SecureHost implements AutoCloseable {
           || clock.millis() >= expires
           || key == null
           || !expected.equals(pendingFingerprint)) throw new Wire.Fault(409, "approval_mismatch");
-      long until = clock.millis() + Duration.ofDays(30).toMillis();
+      long until = Math.min(clock.millis() + Duration.ofDays(30).toMillis(),
+          pki.ca.chain[0].getNotAfter().getTime());
       var cert =
           pki.certificate(
-              key, true, Instant.now().minusSeconds(60), Instant.ofEpochMilli(until), null);
+              key, true, clock.instant().minusSeconds(60), Instant.ofEpochMilli(until), null);
       String encoded = Base64.getEncoder().encodeToString(cert.getEncoded());
       store.grant(
-          new GrantStore.Grant(pendingFingerprint, encoded, Set.copyOf(scopes), until, false));
+          new GrantStore.Grant(pendingFingerprint, encoded, Set.copyOf(scopes), until, false),
+          clock.millis());
       certificate = encoded;
       approved = true;
       deliveredUntil = Math.min(expires, clock.millis() + 30000);
+      background.schedule(() -> {
+        try {
+          close();
+        } catch (Exception ignored) {
+        }
+      }, Math.max(0, deliveredUntil - clock.millis()), TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -306,25 +323,29 @@ final class SecureHost implements AutoCloseable {
       try {
         synchronized (store) {
           store.require(owner, "observe", clock.millis());
-          var bytes =
-              ("id: " + (++sequence) + "\ndata: {\"type\":\"heartbeat\"}\n\n")
-                  .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-          writeDeadline.set(background.schedule(this::close, 10, TimeUnit.SECONDS));
-          response.write(
-              false,
-              ByteBuffer.wrap(bytes),
-              new Callback() {
-                public void succeeded() {
-                  cancelWriteDeadline();
+        }
+        var bytes =
+            ("id: " + (++sequence) + "\ndata: {\"type\":\"heartbeat\"}\n\n")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        writeDeadline.set(background.schedule(this::close, 10, TimeUnit.SECONDS));
+        response.write(
+            false,
+            ByteBuffer.wrap(bytes),
+            new Callback() {
+              public void succeeded() {
+                cancelWriteDeadline();
+                try {
                   if (!finished.get())
                     background.schedule(Stream.this::send, 100, TimeUnit.MILLISECONDS);
-                }
-
-                public void failed(Throwable t) {
+                } catch (RejectedExecutionException e) {
                   close();
                 }
-              });
-        }
+              }
+
+              public void failed(Throwable t) {
+                close();
+              }
+            });
       } catch (Exception e) {
         close();
       }

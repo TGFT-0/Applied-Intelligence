@@ -38,7 +38,8 @@ with zipfile.ZipFile(jar) as archive:
     for name in names:
         if name.startswith('dev/tgft/appliedintelligence/') and name.endswith('.class'):
             code = archive.read(name)
-            assert not any(symbol in code for symbol in (b'/ai/v1', b'com/sun/net/httpserver', b'java/net/ServerSocket')), 'Remote listener/endpoint code included'
+            assert not any(symbol in code for symbol in (b'/ai/v1', b'com/sun/net/httpserver', b'java/net/ServerSocket', b'java/nio/channels/ServerSocketChannel', b'java/nio/channels/AsynchronousServerSocketChannel', b'java/net/Socket', b'java/nio/channels/SocketChannel', b'java/net/DatagramSocket', b'java/net/HttpURLConnection', b'javax/net/ssl/HttpsURLConnection', b'java/net/http/WebSocket', b'io/netty/bootstrap/ServerBootstrap')), 'Remote listener/endpoint code included'
+            assert b'java/net/http/HttpClient' not in code or name == 'dev/tgft/appliedintelligence/local/OpenCodeSession.class', 'Unexpected outbound HTTP client included'
     protocol = archive.read('dev/tgft/appliedintelligence/Protocol.class')
     assert not any(action in protocol for action in (b'remote_pair', b'host_configure', b'host_pair_code')), 'Retired control action included'
 

@@ -41,11 +41,13 @@ public final class ReportArchive extends SavedData {
     if (!job.get("state").getAsString().equals("completed"))
       throw new IllegalArgumentException("not completed");
     if (entries.containsKey(id)) return;
+    pruneClaimed(255);
+    if (entries.size() >= 256) throw new IllegalStateException("Report archive full");
     CompoundTag entry = new CompoundTag();
     entry.putString("id", id);
     entry.putString("recipe", spec.key());
     entry.putString("name", spec.name());
-    entry.putString("result", job.get("result").getAsString());
+    entry.putString("result", boundedResult(job.get("result").getAsString()));
     entry.putString(
         "author",
         dev.tgft.appliedintelligence.local.AgentBackend.author(
@@ -61,16 +63,18 @@ public final class ReportArchive extends SavedData {
       String name = entry.getString("name");
       String author = entry.contains("author") ? entry.getString("author") : "Codex";
       String text = name + "\n" + author + "\n\n" + entry.getString("result");
+      var images = entry.contains("images")
+          ? com.google.gson.JsonParser.parseString(entry.getString("images")).getAsJsonArray()
+          : new com.google.gson.JsonArray();
+      int imagePages = Math.min(99, images.size());
       var pages =
           new ArrayList<>(
-              ReportPages.split(text).stream()
+              ReportPages.split(text, 100 - imagePages).stream()
                   .map(s -> Filterable.<Component>passThrough(Component.literal(s)))
                   .toList());
       if (entry.contains("images")) {
-        var images =
-            com.google.gson.JsonParser.parseString(entry.getString("images")).getAsJsonArray();
         // One short link per page avoids book pagination splitting a clickable title.
-        for (int i = 0; i < images.size(); i++) {
+        for (int i = 0; i < imagePages; i++) {
           final int imageIndex = i;
           String imageName = images.get(i).getAsJsonObject().get("name").getAsString();
           var link =
@@ -105,10 +109,29 @@ public final class ReportArchive extends SavedData {
           DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(identity));
       entry.putBoolean("claimed", true);
       entry.remove("result");
+      pruneClaimed(256);
       setDirty();
       return book;
     }
     return ItemStack.EMPTY;
+  }
+
+  private void pruneClaimed(int limit) {
+    var iterator = entries.values().iterator();
+    while (entries.size() > limit && iterator.hasNext())
+      if (iterator.next().getBoolean("claimed")) iterator.remove();
+  }
+
+  private static String boundedResult(String text) {
+    int bytes = 0, end = 0;
+    while (end < text.length()) {
+      int cp = text.codePointAt(end);
+      int width = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+      if (bytes + width > 30000) return text.substring(0, end) + "\n[truncated]";
+      bytes += width;
+      end += Character.charCount(cp);
+    }
+    return text;
   }
 
   public boolean containsImage(String execution, String image) {

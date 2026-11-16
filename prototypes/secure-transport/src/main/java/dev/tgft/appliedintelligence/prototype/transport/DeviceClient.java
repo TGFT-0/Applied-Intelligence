@@ -31,6 +31,20 @@ final class DeviceClient implements AutoCloseable {
     anchor = Pki.decode(Base64.getDecoder().decode(invitation.ca()));
     if (anchor.getBasicConstraints() < 0 || anchor.getPublicKey().getEncoded().length > 1024)
       throw new IllegalArgumentException("Invalid anchor");
+    anchor.verify(anchor.getPublicKey());
+    boolean[] usage = anchor.getKeyUsage();
+    if (usage == null || usage.length <= 5 || !usage[5]
+        || !(anchor.getPublicKey() instanceof java.security.interfaces.ECPublicKey ec))
+      throw new IllegalArgumentException("Invalid anchor");
+    var parameters = AlgorithmParameters.getInstance("EC");
+    parameters.init(new java.security.spec.ECGenParameterSpec("secp256r1"));
+    var expected = parameters.getParameterSpec(java.security.spec.ECParameterSpec.class);
+    var actual = ec.getParams();
+    if (!expected.getCurve().equals(actual.getCurve())
+        || !expected.getGenerator().equals(actual.getGenerator())
+        || !expected.getOrder().equals(actual.getOrder())
+        || expected.getCofactor() != actual.getCofactor())
+      throw new IllegalArgumentException("Invalid anchor");
     anchor.checkValidity();
     enrollment = Pki.client(anchor, null);
   }
@@ -76,9 +90,12 @@ final class DeviceClient implements AutoCloseable {
     var leaf = Pki.decode(Base64.getDecoder().decode(reply.certificate()));
     leaf.verify(anchor.getPublicKey());
     leaf.checkValidity();
+    boolean[] usage = leaf.getKeyUsage();
     if (!Arrays.equals(key.getPublic().getEncoded(), leaf.getPublicKey().getEncoded())
         || leaf.getBasicConstraints() != -1
-        || !leaf.getExtendedKeyUsage().equals(List.of("1.3.6.1.5.5.7.3.2")))
+        || leaf.getExtensionValue("2.5.29.19") == null
+        || usage == null || usage.length == 0 || !usage[0]
+        || !List.of("1.3.6.1.5.5.7.3.2").equals(leaf.getExtendedKeyUsage()))
       throw new IllegalArgumentException("Invalid client certificate");
     identity = new Pki.Identity(key, leaf, anchor);
     reconnect(endpoint(invitation.control()));

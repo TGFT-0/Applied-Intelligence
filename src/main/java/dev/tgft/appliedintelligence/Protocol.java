@@ -131,7 +131,9 @@ public final class Protocol {
     JsonArray result = new JsonArray();
     if (data.has("slots")) {
       if (data.getAsJsonArray("slots").size() > 9) throw new RequestFailure("too_many_skills");
+      var seen = new java.util.HashSet<Integer>();
       for (var value : data.getAsJsonArray("slots")) {
+        if (!seen.add(value.getAsInt())) continue;
         CompoundTag tag =
             card(p, value.getAsInt(), true)
                 .getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY)
@@ -236,6 +238,7 @@ public final class Protocol {
       }
       rate.put(p.getUUID(), now);
       if (action.equals("skill") || action.equals("encode") || action.equals("copy")) {
+        if (!NativeAgents.allowed(p)) throw new RequestFailure("singleplayer_only");
         if (!(p.containerMenu instanceof PatternEncodingTermMenu))
           throw new RequestFailure("encoding_terminal_required");
         String name = cardName(data);
@@ -258,13 +261,27 @@ public final class Protocol {
               names = JsonParser.parseString(old.getString("skill_names")).getAsJsonArray();
           } else {
             selected = skills(p, data);
-            if (data.has("slots"))
+            if (data.has("slots")) {
+              var seen = new java.util.HashSet<Integer>();
               for (var value : data.getAsJsonArray("slots"))
-                names.add(card(p, value.getAsInt(), true).getHoverName().getString());
+                if (seen.add(value.getAsInt()))
+                  names.add(card(p, value.getAsInt(), true).getHoverName().getString());
+            }
+          }
+          if (selected.size() > 9 || names.size() > 9) throw new RequestFailure("too_many_skills");
+          for (var skill : selected)
+            if (!skill.isJsonPrimitive() || !skill.getAsJsonPrimitive().isString()
+                || skill.getAsString().length() > 8000) throw new RequestFailure("invalid_text");
+          for (int i = 0; i < names.size(); i++) {
+            String display = names.get(i).getAsString();
+            int end = Math.min(64, display.length());
+            if (end > 0 && Character.isHighSurrogate(display.charAt(end - 1))) end--;
+            names.set(i, new JsonPrimitive(display.substring(0, end)));
           }
           JsonObject encoded = new JsonObject();
           encoded.addProperty("prompt", bodyText);
           encoded.add("skills", selected);
+          encoded.add("skill_names", names);
           if (JSON.toJson(encoded).getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 24000)
             throw new RequestFailure("pattern_too_large");
           tag.putString("prompt", bodyText);
