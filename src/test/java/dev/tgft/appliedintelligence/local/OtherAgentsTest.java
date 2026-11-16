@@ -221,6 +221,36 @@ class OtherAgentsTest {
   }
 
   @Test
+  void openCodeCompletionWaitsForInFlightFormReply() throws Exception {
+    configure("opencode");
+    Files.writeString(root.resolve("hold-reply"), "yes");
+    var request = request("ASK");
+    runner.dispatch("submit", request);
+    await(() -> job(request).has("question") && !job(request).get("question").isJsonNull());
+    var answer = new JsonObject();
+    answer.add("id", request.get("id"));
+    answer.add("request", job(request).getAsJsonObject("question").get("request"));
+    var values = new JsonObject();
+    values.addProperty("format", "简要");
+    answer.add("answers", values);
+    var pending = CompletableFuture.supplyAsync(() -> runner.dispatch("answer_job", answer));
+    try {
+      await(() -> Files.exists(root.resolve("final-message-read")));
+      // SSE completion must not shut down the client or its owned process before the reply ends.
+      assertThrows(TimeoutException.class, () -> pending.get(300, TimeUnit.MILLISECONDS));
+      assertEquals("running", job(request).get("state").getAsString());
+    } finally {
+      Files.writeString(root.resolve("release-reply"), "yes");
+    }
+    assertTrue(pending.get(12, TimeUnit.SECONDS).has("answer_ack"));
+    await(() -> job(request).get("state").getAsString().equals("completed"));
+    assertTrue(runner.dispatch("answer_job", answer).has("answer_ack"));
+    values.addProperty("format", "different");
+    var conflict = assertThrows(LocalCodex.Failure.class, () -> runner.dispatch("answer_job", answer));
+    assertEquals("request_conflict", conflict.key);
+  }
+
+  @Test
   void openCodeSteeringAndCancellationUseCurrentExecutionOnly() throws Exception {
     configure("opencode");
     var request = request("HOLD");

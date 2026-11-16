@@ -271,12 +271,35 @@ public final class FakeOtherAgent {
             }
             if (path.endsWith("/reply")) {
               Files.writeString(ROOT.resolve("answers.json"), body);
+              if (Files.exists(ROOT.resolve("hold-reply"))) {
+                // Keep the HTTP body incomplete while the independent SSE stream finishes.
+                try (var watch = FileSystems.getDefault().newWatchService()) {
+                  ROOT.register(watch, StandardWatchEventKinds.ENTRY_CREATE);
+                  exchange.sendResponseHeaders(200, 2);
+                  try (var out = exchange.getResponseBody()) {
+                    out.write('{');
+                    out.flush();
+                    event(
+                        "form.replied",
+                        "{\"sessionID\":\"oc-fixture\",\"id\":\"frm_fixture\"}");
+                    ocEnd();
+                    while (!Files.exists(ROOT.resolve("release-reply"))) {
+                      var key = watch.take();
+                      key.pollEvents();
+                      key.reset();
+                    }
+                    out.write('}');
+                  }
+                }
+                return;
+              }
               respond(exchange, "{}");
               event("form.replied", "{\"sessionID\":\"oc-fixture\",\"id\":\"frm_fixture\"}");
               ocEnd();
               return;
             }
             if (path.endsWith("/message")) {
+              Files.writeString(ROOT.resolve("final-message-read"), "yes");
               respond(
                   exchange,
                   "{\"data\":[{\"type\":\"assistant\",\"content\":[{\"type\":\"reasoning\",\"text\":\"PRIVATE_REASONING\"},{\"type\":\"text\",\"text\":\"OpenCode"

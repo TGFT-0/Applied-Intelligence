@@ -106,7 +106,8 @@ final class OpenCodeSession implements AgentSession {
         });
   }
 
-  public void answer(JsonElement id, JsonObject values) throws IOException {
+  public synchronized void answer(JsonElement id, JsonObject values) throws IOException {
+    if (!live) throw new IOException("expired form");
     String key = id.getAsString();
     var form = forms.get(key);
     if (form == null) throw new IOException("expired form");
@@ -316,9 +317,17 @@ final class OpenCodeSession implements AgentSession {
       Thread.currentThread().interrupt();
       throw new IOException("interrupted", e);
     } finally {
-      live = false;
-      if (stream != null) stream.close();
-      http.shutdownNow();
+      // SSE completion can precede the end of a form reply's HTTP response. Keep both the
+      // client and its owned process alive until the admitted answer finishes (or times out).
+      // This session monitor never holds the LocalCodex runner lock during backend I/O.
+      synchronized (this) {
+        live = false;
+        try {
+          if (stream != null) stream.close();
+        } finally {
+          http.shutdownNow();
+        }
+      }
     }
   }
 
