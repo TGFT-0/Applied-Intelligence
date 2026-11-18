@@ -141,7 +141,12 @@ public final class AgentAssembler extends BlockEntity implements ICraftingMachin
       var record = response.getAsJsonObject("job");
       switch (record.get("state").getAsString()) {
         case "completed" -> {
-          ReportArchive.get((ServerLevel) level).store(task.spec(), record);
+          if (!ReportArchive.get((ServerLevel) level).store(task.spec(), record)) {
+            error = "report_archive_full";
+            setChanged();
+            return;
+          }
+          error = "";
           phase = "output";
           setChanged();
           releaseRecord(owner);
@@ -222,13 +227,13 @@ public final class AgentAssembler extends BlockEntity implements ICraftingMachin
 
   public void dropContents() {
     var owner = owner();
-    if (owner != null && !job.isBlank()
+    if (owner != null
+        && !job.isBlank()
         && (phase.equals("new") || phase.equals("dispatch") || phase.equals("working"))) {
-      var request = new JsonObject();
-      request.addProperty("id", job);
-      NativeAgents.dispatch(owner, "cancel_job", request);
+      NativeAgents.cancelSubmission(owner, job, submitting ? pending : null);
+    } else {
+      releaseRecord(owner);
     }
-    releaseRecord(owner);
     if (!pattern.isEmpty()) {
       ItemStack drop;
       try {

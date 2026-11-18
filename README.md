@@ -1,6 +1,6 @@
 [![中文](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-2ea44f?style=for-the-badge)](README.md) [![English](https://img.shields.io/badge/English-57606a?style=for-the-badge)](README.en.md)
 
-**远程功能暂时移除。0.10.0-alpha 和 0.11.0-alpha 已撤回，请停止旧 Agent host，并替换为仅支持本机的 0.11.1-alpha。**
+**远程功能暂时移除。0.10.0-alpha 和 0.11.0-alpha 已撤回，请停止旧 Agent host，并替换为仅支持本机的 0.11.2-alpha。**
 
 [远程控制重新设计（已有传输原型，暂未开放）](docs/design/REMOTE-CONTROL-V2.md)
 

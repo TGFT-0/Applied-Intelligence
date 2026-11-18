@@ -217,5 +217,6 @@
   "gui.appliedintelligence.image_appendix": "图片附件",
   "gui.appliedintelligence.provider_version_unsupported": "此接口需要 OpenCode 2，请更新 CLI。",
   "gui.appliedintelligence.provider_no_steering": "此 Agent 接口不支持执行中补充指令。",
-  "gui.appliedintelligence.remote_disabled": "远程能力已移除，旧远程任务不会在本机重跑。"
+  "gui.appliedintelligence.remote_disabled": "远程能力已移除，旧远程任务不会在本机重跑。",
+  "gui.appliedintelligence.report_archive_full": "报告归档已满。请领取已有报告，装配机会自动继续。"
 }

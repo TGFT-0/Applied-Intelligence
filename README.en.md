@@ -1,6 +1,6 @@
 [![中文](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-57606a?style=for-the-badge)](README.md) [![English](https://img.shields.io/badge/English-2ea44f?style=for-the-badge)](README.en.md)
 
-**Remote access is temporarily removed. Releases 0.10.0-alpha and 0.11.0-alpha are withdrawn. Stop the old Agent host. Use local-only 0.11.1-alpha.**
+**Remote access is temporarily removed. Releases 0.10.0-alpha and 0.11.0-alpha are withdrawn. Stop the old Agent host. Use local-only 0.11.2-alpha.**
 
 [Remote-control redesign (transport prototype, feature unavailable)](docs/design/REMOTE-CONTROL-V2.md)
 

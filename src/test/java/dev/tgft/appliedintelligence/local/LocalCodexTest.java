@@ -462,6 +462,7 @@ class LocalCodexTest {
   @Test
   void blockedAnswerDoesNotHoldRunnerLockOrPreventCancellation() throws Exception {
     ready();
+    var facade = new LocalAgentService(service, root.resolve("routes.json"));
     String id = service.dispatch("submit", request("ASK_FIXTURE")).get("id").getAsString();
     var question = waitQuestion(id);
     var jobsField = LocalCodex.class.getDeclaredField("jobs");
@@ -474,37 +475,68 @@ class LocalCodexTest {
     var lockField = LocalCodex.class.getDeclaredField("lock");
     lockField.setAccessible(true);
     synchronized (lockField.get(service)) {
-      serverField.set(internal, new AgentSession() {
-        public Result run(String cwd, String prompt) { throw new AssertionError(); }
-        public void answer(JsonElement rpc, JsonObject response) throws java.io.IOException {
-          entered.countDown();
-          try {
-            if (!release.await(5, TimeUnit.SECONDS)) throw new java.io.IOException("timeout");
-          } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new java.io.IOException(e);
-          }
-        }
-        public CompletableFuture<Steering> steer(String request, String turn, String text) {
-          throw new AssertionError();
-        }
-      });
+      serverField.set(
+          internal,
+          new AgentSession() {
+            public Result run(String cwd, String prompt) {
+              throw new AssertionError();
+            }
+
+            public void answer(JsonElement rpc, JsonObject response) throws java.io.IOException {
+              entered.countDown();
+              try {
+                if (!release.await(5, TimeUnit.SECONDS)) throw new java.io.IOException("timeout");
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException(e);
+              }
+            }
+
+            public CompletableFuture<Steering> steer(String request, String turn, String text) {
+              throw new AssertionError();
+            }
+          });
     }
-    var answering = new FutureTask<>(() -> service.dispatch("answer_job", answer(id, question)));
+    var answering = new FutureTask<>(() -> facade.dispatch("answer_job", answer(id, question)));
     Thread.ofVirtual().start(answering);
     try {
       assertTrue(entered.await(2, TimeUnit.SECONDS));
-      assertTimeoutPreemptively(Duration.ofSeconds(1), () -> {
-        assertNotNull(call("local_settings"));
-        var cancel = new JsonObject();
-        cancel.addProperty("id", id);
-        service.dispatch("cancel_job", cancel);
-        assertEquals("cancelled", job(id).get("state").getAsString());
-      });
+      assertTimeoutPreemptively(
+          Duration.ofSeconds(1),
+          () -> {
+            assertNotNull(facade.dispatch("local_settings", new JsonObject()));
+            var cancel = new JsonObject();
+            cancel.addProperty("id", id);
+            facade.dispatch("cancel_job", cancel);
+            assertEquals("cancelled", job(id).get("state").getAsString());
+          });
     } finally {
       release.countDown();
     }
     assertEquals(question.get("request"), answering.get(2, TimeUnit.SECONDS).get("answer_ack"));
+    assertEquals("cancelled", job(id).get("state").getAsString());
+  }
+
+  @Test
+  void removingAssemblerBeforeAdmissionCancelsTheLateJobAndReleasesIt() throws Exception {
+    ready();
+    var facade = new LocalAgentService(service, root.resolve("routes.json"));
+    var submit = request("ASK_FIXTURE");
+    submit.addProperty("retain", true);
+    var id = submit.get("id").getAsString();
+    var query = new JsonObject();
+    query.addProperty("id", id);
+    var admission = new CompletableFuture<JsonObject>();
+    var cancellation =
+        NativeAgents.cancelSubmission(
+            admission, action -> CompletableFuture.completedFuture(facade.dispatch(action, query)));
+    assertFalse(cancellation.isDone());
+    admission.complete(facade.dispatch("submit", submit));
+    cancellation.get(2, TimeUnit.SECONDS);
+    assertEquals("cancelled", job(id).get("state").getAsString());
+    assertFalse(job(id).get("retained").getAsBoolean());
+    service.close();
+    service = new LocalCodex(config, database, root.resolve("workspace"));
     assertEquals("cancelled", job(id).get("state").getAsString());
   }
 

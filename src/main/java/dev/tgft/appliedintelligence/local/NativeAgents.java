@@ -44,6 +44,27 @@ public final class NativeAgents {
     return CompletableFuture.supplyAsync(() -> service.dispatch(action, captured));
   }
 
+  public static CompletableFuture<JsonObject> cancelSubmission(
+      ServerPlayer owner, String id, CompletableFuture<JsonObject> admission) {
+    var request = new JsonObject();
+    request.addProperty("id", id);
+    return cancelSubmission(admission, action -> dispatch(owner, action, request));
+  }
+
+  static CompletableFuture<JsonObject> cancelSubmission(
+      CompletableFuture<?> admission,
+      java.util.function.Function<String, CompletableFuture<JsonObject>> dispatch) {
+    var cancellation = dispatch.apply("cancel_job");
+    if (admission != null) {
+      // The first cancellation can arrive before admission. Repeat it after admission settles.
+      cancellation =
+          admission
+              .handle((response, failure) -> null)
+              .thenCompose(ignored -> dispatch.apply("cancel_job"));
+    }
+    return cancellation.thenCompose(ignored -> dispatch.apply("release_job"));
+  }
+
   private static LocalAgentService createService(MinecraftServer server) {
     var local =
         new LocalCodex(

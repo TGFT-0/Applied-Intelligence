@@ -3,7 +3,7 @@ plugins {
     id 'net.neoforged.moddev' version '2.0.74'
 }
 group = 'dev.tgft'
-version = '0.11.1-alpha'
+version = '0.11.2-alpha'
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 neoForge {
     version = project.neoforge_version
@@ -43,3 +43,7 @@ tasks.named('processResources') {
     inputs.property 'mod_version', project.version
     filesMatching('META-INF/neoforge.mods.toml') { expand mod_version: project.version }
 }
+
+// Archive regressions exercise Minecraft NBT on the server classpath.
+sourceSets.test.compileClasspath += sourceSets.main.compileClasspath
+sourceSets.test.runtimeClasspath += sourceSets.main.runtimeClasspath

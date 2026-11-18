@@ -16,7 +16,12 @@ final class GrantStore implements AutoCloseable {
   record Job(
       String owner, String id, String payloadHash, String state, int executions, int ticks) {}
 
-  record State(String host, Map<String, Grant> grants, Map<String, Job> jobs) {}
+  record State(
+      String host, Map<String, Grant> grants, Map<String, Job> jobs, Map<String, Job> retired) {
+    State(String host, Map<String, Grant> grants, Map<String, Job> jobs) {
+      this(host, grants, jobs, Map.of());
+    }
+  }
 
   final Path directory, file;
   private final FileChannel ownership;
@@ -61,14 +66,17 @@ final class GrantStore implements AutoCloseable {
             || state.grants == null
             || state.jobs == null
             || state.grants.size() > 32
-            || state.jobs.size() > 128) throw new IOException("Invalid state");
+            || state.jobs.size() > 128
+            || state.retired != null && state.retired.size() > 512)
+          throw new IOException("Invalid state");
         var jobs = new LinkedHashMap<>(state.jobs);
         jobs.replaceAll(
             (id, j) ->
                 j.state.equals("running")
                     ? new Job(j.owner, j.id, j.payloadHash, "interrupted", j.executions, j.ticks)
                     : j);
-        persist(new State(host, state.grants, jobs));
+        persist(
+            new State(host, state.grants, jobs, state.retired == null ? Map.of() : state.retired));
       } else persist(new State(host, Map.of(), Map.of()));
       lock = acquired;
     } catch (Exception e) {
@@ -128,7 +136,7 @@ final class GrantStore implements AutoCloseable {
       if (grants.size() >= 32) throw new Wire.Fault(429, "device_limit");
     }
     grants.put(grant.fingerprint, grant);
-    persist(new State(state.host, grants, state.jobs));
+    persist(new State(state.host, grants, state.jobs, state.retired));
   }
 
   synchronized Grant require(String device, String scope, long now) {
@@ -150,7 +158,7 @@ final class GrantStore implements AutoCloseable {
             j.owner.equals(device) && j.state.equals("running")
                 ? new Job(j.owner, j.id, j.payloadHash, "cancelled", j.executions, j.ticks)
                 : j);
-    persist(new State(state.host, grants, jobs));
+    persist(new State(state.host, grants, jobs, state.retired));
   }
 
   private static String key(String device, String id) {
@@ -164,6 +172,7 @@ final class GrantStore implements AutoCloseable {
     String k = key(device, id),
         hash = Wire.hash(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     var old = state.jobs.get(k);
+    if (old == null) old = state.retired.get(k);
     if (old != null) {
       if (!old.payloadHash.equals(hash)) throw new Wire.Fault(409, "id_conflict");
       return old;
@@ -173,14 +182,19 @@ final class GrantStore implements AutoCloseable {
     // Durable launch intent precedes the mock worker. Restart never replays it.
     var job = new Job(device, id, hash, "running", 1, 0);
     var jobs = new LinkedHashMap<>(state.jobs);
+    var retired = new LinkedHashMap<>(state.retired);
     var history = jobs.entrySet().iterator();
     while (jobs.size() >= 128 && history.hasNext()) {
-      if (Set.of("completed", "cancelled", "interrupted").contains(history.next().getValue().state))
+      var entry = history.next();
+      if (Set.of("completed", "cancelled", "interrupted").contains(entry.getValue().state)) {
+        if (retired.size() >= 512) throw new Wire.Fault(429, "history_limit");
+        retired.put(entry.getKey(), entry.getValue());
         history.remove();
+      }
     }
     if (jobs.size() >= 128) throw new Wire.Fault(429, "job_limit");
     jobs.put(k, job);
-    persist(new State(state.host, state.grants, jobs));
+    persist(new State(state.host, state.grants, jobs, retired));
     return job;
   }
 
@@ -188,6 +202,7 @@ final class GrantStore implements AutoCloseable {
     require(device, "observe", now);
     Wire.uuid(id);
     var job = state.jobs.get(key(device, id));
+    if (job == null) job = state.retired.get(key(device, id));
     if (job == null) throw new Wire.Fault(404, "not_found");
     return job;
   }
@@ -199,9 +214,10 @@ final class GrantStore implements AutoCloseable {
       var old = state.jobs.get(key(device, id));
       if (old != null && old.state.equals("running")) {
         var jobs = new LinkedHashMap<>(state.jobs);
-        jobs.put(key(device, id),
+        jobs.put(
+            key(device, id),
             new Job(old.owner, old.id, old.payloadHash, "cancelled", old.executions, old.ticks));
-        persist(new State(state.host, state.grants, jobs));
+        persist(new State(state.host, state.grants, jobs, state.retired));
       }
       return false;
     }
@@ -217,7 +233,7 @@ final class GrantStore implements AutoCloseable {
             old.ticks + 1);
     var jobs = new LinkedHashMap<>(state.jobs);
     jobs.put(key(device, id), next);
-    persist(new State(state.host, state.grants, jobs));
+    persist(new State(state.host, state.grants, jobs, state.retired));
     return next.state.equals("running");
   }
 

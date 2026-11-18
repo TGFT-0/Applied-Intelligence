@@ -49,7 +49,7 @@ public final class LocalAgentService implements AutoCloseable {
     return value;
   }
 
-  public synchronized JsonObject dispatch(String action, JsonObject data) {
+  public JsonObject dispatch(String action, JsonObject data) {
     try {
       if (action.startsWith("remote_") || action.startsWith("host_"))
         return error("remote_disabled", false);
@@ -154,7 +154,7 @@ public final class LocalAgentService implements AutoCloseable {
   }
 
   @Override
-  public synchronized void close() {
+  public void close() {
     local.close();
   }
 }

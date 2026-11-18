@@ -622,14 +622,17 @@ class TransportTest {
   @Test
   void expirationCancelsRunningJobDurablyAndFreesTheWorker() throws Exception {
     try (var store = new GrantStore(directory.resolve("expiry"), "host")) {
-      store.grant(new GrantStore.Grant("first", "cert", Set.of("observe", "simulate"), 10, false), 0);
-      store.grant(new GrantStore.Grant("second", "cert", Set.of("observe", "simulate"), 100, false), 0);
+      store.grant(
+          new GrantStore.Grant("first", "cert", Set.of("observe", "simulate"), 10, false), 0);
+      store.grant(
+          new GrantStore.Grant("second", "cert", Set.of("observe", "simulate"), 100, false), 0);
       String id = UUID.randomUUID().toString();
       store.submit("first", id, "fake", 0);
       assertFalse(store.tick("first", id, 10));
       var saved = Wire.read(Files.readAllBytes(store.file), GrantStore.State.class);
       assertEquals("cancelled", saved.jobs().get("first:" + id).state());
-      assertEquals("running", store.submit("second", UUID.randomUUID().toString(), "fake", 10).state());
+      assertEquals(
+          "running", store.submit("second", UUID.randomUUID().toString(), "fake", 10).state());
     }
   }
 
@@ -640,15 +643,24 @@ class TransportTest {
     String first = UUID.randomUUID().toString();
     for (int i = 0; i < 128; i++) {
       String id = i == 0 ? first : UUID.randomUUID().toString();
-      jobs.put("device:" + id, new GrantStore.Job("device", id,
-          Wire.hash("fake".getBytes(StandardCharsets.UTF_8)),
-          List.of("completed", "cancelled", "interrupted").get(i % 3), 1, 20));
+      jobs.put(
+          "device:" + id,
+          new GrantStore.Job(
+              "device",
+              id,
+              Wire.hash("fake".getBytes(StandardCharsets.UTF_8)),
+              List.of("completed", "cancelled", "interrupted").get(i % 3),
+              1,
+              20));
     }
     try (var store = new GrantStore(path, "host")) {
-      store.grant(new GrantStore.Grant("device", "cert", Set.of("observe", "simulate"), 100, false), 0);
+      store.grant(
+          new GrantStore.Grant("device", "cert", Set.of("observe", "simulate"), 100, false), 0);
     }
     var initial = Wire.read(Files.readAllBytes(path.resolve("state.json")), GrantStore.State.class);
-    Files.write(path.resolve("state.json"), Wire.bytes(new GrantStore.State("host", initial.grants(), jobs)));
+    Files.write(
+        path.resolve("state.json"),
+        Wire.bytes(new GrantStore.State("host", initial.grants(), jobs)));
     try (var store = new GrantStore(path, "host")) {
       assertEquals(first, store.submit("device", first, "fake", 0).id());
       String next = UUID.randomUUID().toString();
@@ -656,8 +668,20 @@ class TransportTest {
       var saved = Wire.read(Files.readAllBytes(store.file), GrantStore.State.class);
       assertEquals(128, saved.jobs().size());
       assertFalse(saved.jobs().containsKey("device:" + first));
-      assertEquals("job_limit", assertThrows(Wire.Fault.class,
-          () -> store.submit("device", UUID.randomUUID().toString(), "fake", 0)).code);
+      assertEquals(
+          "job_limit",
+          assertThrows(
+                  Wire.Fault.class,
+                  () -> store.submit("device", UUID.randomUUID().toString(), "fake", 0))
+              .code);
+      for (int i = 0; i < 20; i++) store.tick("device", next, 0);
+    }
+    try (var store = new GrantStore(path, "host")) {
+      assertEquals("completed", store.submit("device", first, "fake", 0).state());
+      assertEquals("completed", store.job("device", first, 0).state());
+      assertEquals(
+          "id_conflict",
+          assertThrows(Wire.Fault.class, () -> store.submit("device", first, "changed", 0)).code);
     }
   }
 
@@ -666,8 +690,14 @@ class TransportTest {
     try (var store = new GrantStore(directory.resolve("grants"), "host")) {
       for (int i = 0; i < 32; i++)
         store.grant(new GrantStore.Grant("device" + i, "cert", Set.of("observe"), 100, false), 0);
-      assertEquals("device_limit", assertThrows(Wire.Fault.class,
-          () -> store.grant(new GrantStore.Grant("extra", "cert", Set.of("observe"), 200, false), 0)).code);
+      assertEquals(
+          "device_limit",
+          assertThrows(
+                  Wire.Fault.class,
+                  () ->
+                      store.grant(
+                          new GrantStore.Grant("extra", "cert", Set.of("observe"), 200, false), 0))
+              .code);
       store.revoke("device0");
       store.grant(new GrantStore.Grant("extra", "cert", Set.of("observe"), 200, false), 0);
       var saved = Wire.read(Files.readAllBytes(store.file), GrantStore.State.class);
@@ -684,14 +714,23 @@ class TransportTest {
     Path path = directory.resolve("bounded");
     try (var store = new GrantStore(path, "host")) {
       for (int i = 0; i < 8; i++)
-        store.grant(new GrantStore.Grant("device" + i, "x".repeat(32000), Set.of("observe"), 100, false), 0);
-      assertThrows(IOException.class, () -> store.grant(
-          new GrantStore.Grant("overflow", "x".repeat(32000), Set.of("observe"), 100, false), 0));
+        store.grant(
+            new GrantStore.Grant("device" + i, "x".repeat(32000), Set.of("observe"), 100, false),
+            0);
+      assertThrows(
+          IOException.class,
+          () ->
+              store.grant(
+                  new GrantStore.Grant(
+                      "overflow", "x".repeat(32000), Set.of("observe"), 100, false),
+                  0));
     }
     try (var store = new GrantStore(path, "host")) {
-      assertEquals(8, Wire.read(Files.readAllBytes(store.file), GrantStore.State.class).grants().size());
+      assertEquals(
+          8, Wire.read(Files.readAllBytes(store.file), GrantStore.State.class).grants().size());
     }
-    Files.setPosixFilePermissions(path.resolve("state.json"),
+    Files.setPosixFilePermissions(
+        path.resolve("state.json"),
         java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
     assertThrows(IOException.class, () -> new GrantStore(path, "host"));
   }
@@ -700,16 +739,81 @@ class TransportTest {
   void slowEnrollmentBodyDoesNotBlockApproval() throws Exception {
     var client = pending();
     var endpoint = URI.create(client.invitation.enroll());
-    try (var socket = (SSLSocket) client.enrollment.sslContext().getSocketFactory()
-        .createSocket("127.0.0.1", endpoint.getPort())) {
+    try (var socket =
+        (SSLSocket)
+            client
+                .enrollment
+                .sslContext()
+                .getSocketFactory()
+                .createSocket("127.0.0.1", endpoint.getPort())) {
       socket.startHandshake();
-      socket.getOutputStream().write(("POST /enroll HTTP/1.1\r\nHost: 127.0.0.1:"
-          + endpoint.getPort() + "\r\nContent-Type: application/json\r\nContent-Length: 10000\r\n\r\n{")
-          .getBytes(StandardCharsets.US_ASCII));
+      socket
+          .getOutputStream()
+          .write(
+              ("POST /enroll HTTP/1.1\r\nHost: 127.0.0.1:"
+                      + endpoint.getPort()
+                      + "\r\nContent-Type: application/json\r\nContent-Length: 10000\r\n\r\n{")
+                  .getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
       Thread.sleep(100);
-      assertTimeoutPreemptively(Duration.ofSeconds(1),
+      assertTimeoutPreemptively(
+          Duration.ofSeconds(1),
           () -> host.approve(Pki.fingerprint(client.key.getPublic()), Set.of("observe")));
+    }
+  }
+
+  @Test
+  void fullRetiredHistoryRejectsNewWorkWithoutForgettingOldIds() throws Exception {
+    Path path = directory.resolve("retired-capacity");
+    var jobs = new LinkedHashMap<String, GrantStore.Job>();
+    var retired = new LinkedHashMap<String, GrantStore.Job>();
+    String hash = Wire.hash("fake".getBytes(StandardCharsets.UTF_8));
+    for (int i = 0; i < 640; i++) {
+      String id = UUID.randomUUID().toString();
+      var job = new GrantStore.Job("device", id, hash, "completed", 1, 20);
+      (i < 128 ? jobs : retired).put("device:" + id, job);
+    }
+    try (var store = new GrantStore(path, "host")) {
+      store.grant(
+          new GrantStore.Grant("device", "cert", Set.of("observe", "simulate"), 100, false), 0);
+    }
+    var state = Wire.read(Files.readAllBytes(path.resolve("state.json")), GrantStore.State.class);
+    Files.write(
+        path.resolve("state.json"),
+        Wire.bytes(new GrantStore.State("host", state.grants(), jobs, retired)));
+    try (var store = new GrantStore(path, "host")) {
+      assertEquals(
+          "history_limit",
+          assertThrows(
+                  Wire.Fault.class,
+                  () -> store.submit("device", UUID.randomUUID().toString(), "fake", 0))
+              .code);
+      var old = retired.values().iterator().next();
+      assertEquals("completed", store.submit("device", old.id(), "fake", 0).state());
+      assertEquals(
+          512, Wire.read(Files.readAllBytes(store.file), GrantStore.State.class).retired().size());
+    }
+  }
+
+  @Test
+  void stateWrittenBeforeRetiredReceiptsIsUpgradedWithoutReplayingJobs() throws Exception {
+    Path path = directory.resolve("old-state");
+    String id = UUID.randomUUID().toString();
+    try (var store = new GrantStore(path, "host")) {
+      store.grant(
+          new GrantStore.Grant("device", "cert", Set.of("observe", "simulate"), 100, false), 0);
+      store.submit("device", id, "fake", 0);
+      for (int i = 0; i < 20; i++) store.tick("device", id, 0);
+    }
+    var old =
+        (com.fasterxml.jackson.databind.node.ObjectNode)
+            Wire.JSON.readTree(Files.readAllBytes(path.resolve("state.json")));
+    old.remove("retired");
+    Files.write(path.resolve("state.json"), Wire.bytes(old));
+    try (var store = new GrantStore(path, "host")) {
+      assertEquals("completed", store.submit("device", id, "fake", 0).state());
+      assertTrue(
+          Wire.read(Files.readAllBytes(store.file), GrantStore.State.class).retired().isEmpty());
     }
   }
 

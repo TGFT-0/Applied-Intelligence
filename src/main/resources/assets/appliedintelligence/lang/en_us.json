@@ -217,5 +217,6 @@
   "gui.appliedintelligence.image_appendix": "Image attachments",
   "gui.appliedintelligence.provider_version_unsupported": "This interface requires OpenCode 2. Update the CLI.",
   "gui.appliedintelligence.provider_no_steering": "This Agent interface does not support steering.",
-  "gui.appliedintelligence.remote_disabled": "Remote access was removed. Old remote tasks will not run locally."
+  "gui.appliedintelligence.remote_disabled": "Remote access was removed. Old remote tasks will not run locally.",
+  "gui.appliedintelligence.report_archive_full": "Report archive full. Claim existing reports. The assembler will continue automatically."
 }

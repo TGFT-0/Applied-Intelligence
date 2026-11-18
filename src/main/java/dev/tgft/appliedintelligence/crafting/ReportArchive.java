@@ -27,7 +27,7 @@ public final class ReportArchive extends SavedData {
             new Factory<>(ReportArchive::new, ReportArchive::load), "appliedintelligence_reports");
   }
 
-  private static ReportArchive load(CompoundTag root, HolderLookup.Provider lookup) {
+  static ReportArchive load(CompoundTag root, HolderLookup.Provider lookup) {
     ReportArchive archive = new ReportArchive();
     for (var value : root.getList("reports", Tag.TAG_COMPOUND)) {
       var entry = (CompoundTag) value;
@@ -36,13 +36,14 @@ public final class ReportArchive extends SavedData {
     return archive;
   }
 
-  public void store(TaskSpec spec, JsonObject job) {
+  public boolean store(TaskSpec spec, JsonObject job) {
     String id = job.get("id").getAsString();
     if (!job.get("state").getAsString().equals("completed"))
       throw new IllegalArgumentException("not completed");
-    if (entries.containsKey(id)) return;
-    pruneClaimed(255);
-    if (entries.size() >= 256) throw new IllegalStateException("Report archive full");
+    if (entries.containsKey(id)) return true;
+    // Claimed entries retain image indexes for books that already exist in the world.
+    if (entries.values().stream().filter(e -> !e.getBoolean("claimed")).count() >= 256)
+      return false;
     CompoundTag entry = new CompoundTag();
     entry.putString("id", id);
     entry.putString("recipe", spec.key());
@@ -55,6 +56,7 @@ public final class ReportArchive extends SavedData {
     if (job.has("images")) entry.putString("images", job.get("images").toString());
     entries.put(id, entry);
     setDirty();
+    return true;
   }
 
   public ItemStack claim(String key) {
@@ -63,9 +65,10 @@ public final class ReportArchive extends SavedData {
       String name = entry.getString("name");
       String author = entry.contains("author") ? entry.getString("author") : "Codex";
       String text = name + "\n" + author + "\n\n" + entry.getString("result");
-      var images = entry.contains("images")
-          ? com.google.gson.JsonParser.parseString(entry.getString("images")).getAsJsonArray()
-          : new com.google.gson.JsonArray();
+      var images =
+          entry.contains("images")
+              ? com.google.gson.JsonParser.parseString(entry.getString("images")).getAsJsonArray()
+              : new com.google.gson.JsonArray();
       int imagePages = Math.min(99, images.size());
       var pages =
           new ArrayList<>(
@@ -107,19 +110,17 @@ public final class ReportArchive extends SavedData {
       identity.putString("execution", entry.getString("id"));
       book.set(
           DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(identity));
-      entry.putBoolean("claimed", true);
-      entry.remove("result");
-      pruneClaimed(256);
-      setDirty();
+      markClaimed(entry.getString("id"));
       return book;
     }
     return ItemStack.EMPTY;
   }
 
-  private void pruneClaimed(int limit) {
-    var iterator = entries.values().iterator();
-    while (entries.size() > limit && iterator.hasNext())
-      if (iterator.next().getBoolean("claimed")) iterator.remove();
+  void markClaimed(String execution) {
+    var entry = entries.get(execution);
+    entry.putBoolean("claimed", true);
+    entry.remove("result");
+    setDirty();
   }
 
   private static String boundedResult(String text) {
