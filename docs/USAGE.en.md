@@ -11,18 +11,18 @@ Open an editor from the Pattern Encoding Terminal's right mode bar. Place a blan
 
 A new card consumes one blank pattern. Editing a card consumes no pattern. Changes to a Skill card do not change saved task patterns. Select the updated Skill in the task editor before saving the pattern again.
 
-Open Agent settings through the editor's gear button. Click the Agent name at the top to change it. Set the CLI path and workspace, then click **Save and check**. Tasks use read-only tools in that workspace. Configure the CLI's model and authentication first. **CLI ready** confirms that the program was detected; it does not test a model response.
+Open Agent settings through the editor's gear button. Click the Agent name at the top to change it. Set the CLI path and workspace, then click **Save and check**. Tasks use read-only tools in that workspace. Configure the CLI's model and authentication before ordering a task.
 
 ## Choose an Agent
 
-| Agent | Interface and checked version | Steering | In-game questions | Tokens |
-|---|---|---|---|---|
-| Codex CLI | app-server, 0.167.0-alpha.4 | Yes | Yes | When reported by the CLI |
-| DeepSeek Harness | ACP v1, 0.2.2-rc.3 | Unavailable | Unavailable | No complete usage; displays `—` |
-| Pi | JSONL RPC, 1.5.2 | Yes | Unavailable | When reported by the CLI |
-| OpenCode 2 | Local HTTP/SSE, 2.2.7 | Yes | Simple text and single-choice forms | When reported by the CLI |
+| Agent | Steering | In-game questions | Tokens |
+|---|---|---|---|
+| Codex CLI | Yes | Yes | When reported by the CLI |
+| DeepSeek Harness | Unavailable | Unavailable | Displays `—` |
+| Pi | Yes | Unavailable | When reported by the CLI |
+| OpenCode 2 | Yes | Simple text and single-choice forms | When reported by the CLI |
 
-DeepSeek Harness means the `dsh` CLI from `deepseek-ai/deepseek-harness`. OpenCode requires **2.x** from `@opencode/cli`. The old 1.x API is unsupported. Official npm packages:
+DeepSeek Harness means the `dsh` CLI from `deepseek-ai/deepseek-harness`. OpenCode requires **2.x** from `@opencode/cli`. Official npm packages:
 
 ```sh
 npm install -g @deepseek-ai/dsh
@@ -30,9 +30,9 @@ npm install -g @earendil-works/pi-coding-agent
 npm install -g @opencode/cli
 ```
 
-Default executable names are `dsh`, `pi`, and `opencode`. Official Windows npm launchers use known CLI entry points. Custom batch launchers are unsupported. Windows and macOS have not had native acceptance tests.
+Default executable names are `dsh`, `pi`, and `opencode`. On Windows, select the launcher from the official npm installation.
 
-The local computer selects one Agent at a time. Accepted local tasks retain their original Agent. Existing Codex settings need no migration. Protocol tests and official CLI connection checks passed; real model execution remains unverified.
+The local computer selects one Agent at a time. Accepted local tasks retain their original Agent.
 
 Pi's restricted mode disables extensions, MCP, and native Skills. Only file reading, search, and directory tools are enabled. In-game Skill cards still accompany each task. DeepSeek reasoning is excluded from public steps. Without a plan tool, the list shows tool actions as they occur. OpenCode currently cancels hidden, conditional, numeric, and multiple-choice forms without inventing answers.
 
@@ -79,20 +79,12 @@ The mod does not download external image URLs or follow symbolic links. It skips
 
 The local computer receives and checks every image before it delivers the result. Archived images remain available after a game restart. Copying only the book into another world does not transfer its images.
 
-## Remote access is withdrawn
-
-Version 0.11.1-alpha supports local Agents only. The remote server, pairing, remote assembler bindings, and standalone host are removed. Old sharing settings cannot start a server. Old remote tasks cannot run locally.
-
-Release attachments for 0.10.0-alpha and 0.11.0-alpha are withdrawn. Close any old standalone host. Replace the old game JAR. A mod update cannot stop an old process on another computer.
-
-Existing books and fully archived images remain available. Incomplete remote results cannot be retrieved. Return paper from failed tasks as described below, then cancel the old CPU order. Preserve configuration and world backups. Do not reuse old pairing credentials.
-
-## Cancellation, failure, and disconnection
+## Cancellation and failure
 
 - Cancel in this mod's crafting screen to request Agent interruption. Task cancellation acknowledgment precedes CPU order cancellation. Several CPUs with the same pattern can prevent cancellation.
 - Failed tasks produce no book. Sneak-use the assembler with an empty hand to return its paper and reset it. Then cancel the old waiting CPU order.
 - Other mods that cancel AE2 orders do not automatically stop submitted CLI tasks.
-- A disconnected assembler retains its task and retries without creating a replacement task.
+- Removing a working assembler cancels its task.
 - Closing the world interrupts local tasks without automatic execution after restart.
 
 ## Storage and backups
@@ -105,3 +97,5 @@ Existing books and fully archived images remain available. Incomplete remote res
 | Archived images | World: `data/appliedintelligence/report-images/` |
 
 Preserve the entire world in a backup. Task history retains at most 100 entries. Unarchived results remain protected from removal. Books store text, and the world archive stores images.
+
+The assembler waits when the report archive is full. Claim existing reports to let it continue. Claimed books retain their image indexes in the world archive.
