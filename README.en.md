@@ -1,5 +1,11 @@
 [![中文](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-57606a?style=for-the-badge)](README.md) [![English](https://img.shields.io/badge/English-2ea44f?style=for-the-badge)](README.en.md)
 
+[Download 0.11.2-alpha JAR](https://github.com/TGFT-0/Applied-Intelligence/releases/download/v0.11.2-alpha/applied-intelligence-0.11.2-alpha-mc1.21.1-neoforge.jar) · [Release notes](https://github.com/TGFT-0/Applied-Intelligence/releases/tag/v0.11.2-alpha)
+
+Use Minecraft 1.21.1, NeoForge 21.1.169, and AE2 19.2.19.
+
+Version 0.11.2-alpha fixes report archiving, book images, blocked question replies, and cancellation when you remove an assembler.
+
 **Remote access is temporarily removed. Releases 0.10.0-alpha and 0.11.0-alpha are withdrawn. Stop the old Agent host. Use local-only 0.11.2-alpha.**
 
 [Remote-control redesign (transport prototype, feature unavailable)](docs/design/REMOTE-CONTROL-V2.md)

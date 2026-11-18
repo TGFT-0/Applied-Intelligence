@@ -1,5 +1,11 @@
 [![中文](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-2ea44f?style=for-the-badge)](README.md) [![English](https://img.shields.io/badge/English-57606a?style=for-the-badge)](README.en.md)
 
+[下载 0.11.2-alpha JAR](https://github.com/TGFT-0/Applied-Intelligence/releases/download/v0.11.2-alpha/applied-intelligence-0.11.2-alpha-mc1.21.1-neoforge.jar) · [发行说明](https://github.com/TGFT-0/Applied-Intelligence/releases/tag/v0.11.2-alpha)
+
+适用于 Minecraft 1.21.1、NeoForge 21.1.169 和 AE2 19.2.19。
+
+这一版修复了报告归档、成书图片、问答响应和拆机取消的问题。
+
 **远程功能暂时移除。0.10.0-alpha 和 0.11.0-alpha 已撤回，请停止旧 Agent host，并替换为仅支持本机的 0.11.2-alpha。**
 
 [远程控制重新设计（已有传输原型，暂未开放）](docs/design/REMOTE-CONTROL-V2.md)
