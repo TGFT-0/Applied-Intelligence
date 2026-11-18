@@ -48,7 +48,16 @@ public final class NativeAgents {
       ServerPlayer owner, String id, CompletableFuture<JsonObject> admission) {
     var request = new JsonObject();
     request.addProperty("id", id);
-    return cancelSubmission(admission, action -> dispatch(owner, action, request));
+    if (!allowed(owner)) return CompletableFuture.completedFuture(error("singleplayer_only"));
+    LocalAgentService service;
+    synchronized (SERVICES) {
+      service = SERVICES.get(owner.getServer());
+    }
+    if (service == null) return CompletableFuture.completedFuture(error("local_closed"));
+    // Keep the owning service captured. A late callback must not reopen a closing world.
+    return cancelSubmission(
+        admission,
+        action -> CompletableFuture.supplyAsync(() -> service.dispatch(action, request)));
   }
 
   static CompletableFuture<JsonObject> cancelSubmission(
