@@ -211,7 +211,12 @@ public final class FakeOtherAgent {
         "/api/",
         exchange -> {
           try {
-            if (!authorization.equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
+            boolean noAuth = Files.exists(ROOT.resolve("no-auth"));
+            if (noAuth && exchange.getRequestHeaders().containsKey("Authorization")) {
+              Files.writeString(ROOT.resolve("leaked-auth"), "yes");
+            }
+            if (!noAuth
+                && !authorization.equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
               exchange.sendResponseHeaders(401, -1);
               exchange.close();
               return;

@@ -808,4 +808,22 @@ class LocalCodexTest {
     assertEquals("cancelled", job(id).get("state").getAsString());
     assertTimeoutPreemptively(Duration.ofSeconds(2), () -> service.close());
   }
+
+  @Test
+  void configRejectsControlCharactersInExecutableAndWorkspace() {
+    for (String field : List.of("executable", "workspace")) {
+      var bad = new JsonObject();
+      bad.addProperty("provider", "codex");
+      bad.addProperty("executable", field.equals("executable") ? "codex\u0000evil" : "codex");
+      bad.addProperty(
+          "workspace",
+          field.equals("workspace")
+              ? root.resolve("ws\nbad").toString()
+              : root.resolve("ws").toString());
+      assertEquals(
+          "local_config_invalid",
+          assertThrows(LocalCodex.Failure.class, () -> service.dispatch("local_configure", bad))
+              .key);
+    }
+  }
 }

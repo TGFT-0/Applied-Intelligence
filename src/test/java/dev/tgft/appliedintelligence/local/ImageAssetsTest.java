@@ -128,4 +128,25 @@ class ImageAssetsTest {
     assertEquals(8, store.manifest(job).size());
     assertThrows(IllegalArgumentException.class, () -> store.manifest("../other"));
   }
+
+  @Test
+  void rejectsSymlinkedManifestAndImageBlobDuringReads() throws Exception {
+    var store = new ImageAssets(root.resolve("store"));
+    var entry = store.capture(job, png(8, 8, 1), "ok.png");
+    String imageId = entry.get("id").getAsString();
+    Path dir = root.resolve("store").resolve(job);
+    Path target = Files.write(root.resolve("outside.png"), png(8, 8, 2));
+    Files.delete(dir.resolve(imageId + ".png"));
+    Files.createSymbolicLink(dir.resolve(imageId + ".png"), target);
+    var query = new JsonObject();
+    query.addProperty("id", job);
+    query.addProperty("image", imageId);
+    query.addProperty("offset", 0);
+    assertThrows(IOException.class, () -> store.chunk(query));
+
+    Path outsideManifest = Files.writeString(root.resolve("outside.json"), "[]");
+    Files.delete(dir.resolve("images.json"));
+    Files.createSymbolicLink(dir.resolve("images.json"), outsideManifest);
+    assertThrows(IOException.class, () -> store.manifest(job));
+  }
 }

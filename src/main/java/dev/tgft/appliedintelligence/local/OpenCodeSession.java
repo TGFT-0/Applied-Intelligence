@@ -18,6 +18,7 @@ final class OpenCodeSession implements AgentSession {
   private final String authorization;
   private final HttpClient http =
       HttpClient.newBuilder()
+          .version(HttpClient.Version.HTTP_1_1)
           .proxy(ProxySelector.of(null))
           .followRedirects(HttpClient.Redirect.NEVER)
           .connectTimeout(Duration.ofSeconds(5))
@@ -189,39 +190,92 @@ final class OpenCodeSession implements AgentSession {
     }
   }
 
+  static String parseLoopbackBase(String raw) throws IOException {
+    if (raw == null || raw.isBlank()) throw new IOException("invalid server address");
+    URI address;
+    try {
+      address = URI.create(raw.trim());
+    } catch (IllegalArgumentException e) {
+      throw new IOException("invalid server address", e);
+    }
+    if (!"http".equals(address.getScheme())
+        || !"127.0.0.1".equals(address.getHost())
+        || address.getPort() < 1
+        || address.getPort() > 65535
+        || address.getUserInfo() != null
+        || address.getRawQuery() != null
+        || address.getFragment() != null
+        || (address.getRawPath() != null
+            && !address.getRawPath().isEmpty()
+            && !"/".equals(address.getRawPath())))
+      throw new IOException("invalid server address");
+    return "http://127.0.0.1:" + address.getPort();
+  }
+
   public Result run(String cwd, String text) throws IOException {
     var reader =
         new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
     try {
       String line;
-      while ((line = LocalCodex.boundedLine(reader)) != null) {
+      String rawBase = null;
+      for (int count = 0; count < 1024 && (line = LocalCodex.boundedLine(reader)) != null; count++) {
         try {
           var frame = JsonParser.parseString(line).getAsJsonObject();
-          if (frame.has("url")) {
-            base = frame.get("url").getAsString();
+          if (frame.has("url")
+              && frame.get("url").isJsonPrimitive()
+              && frame.get("url").getAsJsonPrimitive().isString()) {
+            rawBase = frame.get("url").getAsString();
             break;
           }
         } catch (RuntimeException ignored) {
         }
       }
-      if (base == null) return new Result(false, "");
-      URI address = URI.create(base);
-      if (!address.getScheme().equals("http")
-          || !address.getHost().equals("127.0.0.1")
-          || address.getPort() < 1
-          || address.getUserInfo() != null
-          || address.getRawQuery() != null
-          || address.getFragment() != null
-          || !Set.of("", "/").contains(address.getPath()))
-        throw new IOException("invalid server address");
-      base = base.replaceAll("/+$", "");
+      if (rawBase == null) return new Result(false, "");
+      base = parseLoopbackBase(rawBase);
+      // Verify the owned loopback endpoint enforces authentication before sending credentials.
+      var probe =
+          http.send(
+              HttpRequest.newBuilder(URI.create(base + "/api/event"))
+                  .header("Accept", "text/event-stream")
+                  .timeout(Duration.ofSeconds(5))
+                  .GET()
+                  .build(),
+              HttpResponse.BodyHandlers.ofInputStream());
+      try (var ignored = probe.body()) {
+        if (probe.statusCode() != 401) throw new IOException("unauthenticated server refused");
+      }
       // A successful authenticated subscription is established before creating or prompting a
       // session.
-      var subscription =
-          http.send(
+      var subscriptionFuture =
+          http.sendAsync(
               request("/api/event").header("Accept", "text/event-stream").build(),
               HttpResponse.BodyHandlers.ofInputStream());
-      if (subscription.statusCode() != 200) {
+      HttpResponse<InputStream> subscription;
+      try {
+        subscription = subscriptionFuture.get(10, TimeUnit.SECONDS);
+      } catch (TimeoutException | ExecutionException e) {
+        subscriptionFuture.cancel(true);
+        subscriptionFuture.thenAccept(
+            r -> {
+              try {
+                r.body().close();
+              } catch (IOException ignored) {
+              }
+            });
+        throw new IOException("event subscription failed", e);
+      }
+      boolean sseContentType =
+          subscription
+              .headers()
+              .firstValue("Content-Type")
+              .map(
+                  v -> {
+                    int semi = v.indexOf(';');
+                    String mediaType = (semi >= 0 ? v.substring(0, semi) : v).trim();
+                    return mediaType.equalsIgnoreCase("text/event-stream");
+                  })
+              .orElse(false);
+      if (subscription.statusCode() != 200 || !sseContentType) {
         subscription.body().close();
         throw new IOException("event subscription failed");
       }
@@ -345,7 +399,10 @@ final class OpenCodeSession implements AgentSession {
             listener.image(null, uri.substring(uri.indexOf(',') + 1));
           else if (uri.startsWith("file:"))
             try {
-              listener.image(java.nio.file.Path.of(URI.create(uri)).toString(), null);
+              URI parsed = URI.create(uri);
+              if ("file".equalsIgnoreCase(parsed.getScheme())
+                  && (parsed.getRawAuthority() == null || parsed.getRawAuthority().isEmpty()))
+                listener.image(java.nio.file.Path.of(parsed).toString(), null);
             } catch (RuntimeException ignored) {
             }
         }

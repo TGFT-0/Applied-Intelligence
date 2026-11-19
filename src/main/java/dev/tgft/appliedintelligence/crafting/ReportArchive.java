@@ -38,6 +38,7 @@ public final class ReportArchive extends SavedData {
 
   public boolean store(TaskSpec spec, JsonObject job) {
     String id = job.get("id").getAsString();
+    if (!UUID.fromString(id).toString().equals(id)) throw new IllegalArgumentException("invalid id");
     if (!job.get("state").getAsString().equals("completed"))
       throw new IllegalArgumentException("not completed");
     if (entries.containsKey(id)) return true;

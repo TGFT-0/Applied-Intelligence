@@ -42,5 +42,7 @@ class ReportArchiveTest {
     assertFalse(loaded.store(spec, record));
     loaded.markClaimed(next);
     assertTrue(loaded.store(spec, record));
+    record.addProperty("id", UUID.randomUUID() + " /say evil");
+    assertThrows(IllegalArgumentException.class, () -> loaded.store(spec, record));
   }
 }

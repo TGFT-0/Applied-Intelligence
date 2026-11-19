@@ -19,6 +19,7 @@ jobs:
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       filename: ${{ steps.metadata.outputs.filename }}
+      sha256: ${{ steps.metadata.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-java@v6.3.0
@@ -33,15 +34,17 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import os, pathlib, re
+          import hashlib, os, pathlib, re
           version = re.search(r"^version = '([^']+)'", pathlib.Path('build.gradle').read_text(), re.M)[1]
           if not re.fullmatch(r'\d+\.\d+\.\d+-alpha', version):
               raise SystemExit('This workflow publishes alpha releases only')
           filename = f'applied-intelligence-{version}-mc1.21.1-neoforge.jar'
-          if not pathlib.Path('build/libs', filename).is_file():
+          jar = pathlib.Path('build/libs', filename)
+          if not jar.is_file():
               raise SystemExit('Verified release JAR missing')
+          digest = hashlib.sha256(jar.read_bytes()).hexdigest()
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'version={version}\nfilename={filename}\n')
+              output.write(f'version={version}\nfilename={filename}\nsha256={digest}\n')
           PY
       - uses: actions/upload-artifact@v7.0.2
         with:
@@ -66,9 +69,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
           RELEASE_FILENAME: ${{ needs.build.outputs.filename }}
+          RELEASE_SHA256: ${{ needs.build.outputs.sha256 }}
           RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha$ ]]
+          [[ "$RELEASE_FILENAME" == "applied-intelligence-${RELEASE_VERSION}-mc1.21.1-neoforge.jar" ]]
+          [[ "$RELEASE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  release/%s\n' "$RELEASE_SHA256" "$RELEASE_FILENAME" | sha256sum -c -
           tag="v${RELEASE_VERSION}"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo 'Release already exists. Existing assets require a separate review.' >&2

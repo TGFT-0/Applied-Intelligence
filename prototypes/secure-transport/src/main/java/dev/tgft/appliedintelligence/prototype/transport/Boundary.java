@@ -59,6 +59,12 @@ final class Boundary implements AutoCloseable {
     var pool = new QueuedThreadPool(16, 4);
     pool.setName("prototype-http");
     server = new Server(pool);
+    // Jetty can reject requests before the route handler runs.
+    server.setErrorHandler(
+        (request, response, callback) -> {
+          reply(response, callback, response.getStatus(), new Wire.Error("invalid_request"));
+          return true;
+        });
     var http = new HttpConfiguration();
     http.setPersistentConnectionsEnabled(false);
     http.setRequestHeaderSize(8192);
@@ -85,7 +91,14 @@ final class Boundary implements AutoCloseable {
             slots.add(e);
             handshakes.put(
                 e,
-                timer.schedule(connection::close, limits.handshakeMillis, TimeUnit.MILLISECONDS));
+                timer.schedule(
+                    () -> {
+                      finish(e);
+                      connection.close();
+                    },
+                    limits.handshakeMillis,
+                    TimeUnit.MILLISECONDS));
+            if (!connection.getEndPoint().isOpen()) finish(e);
           }
 
           public void onClosed(Connection connection) {
@@ -97,14 +110,18 @@ final class Boundary implements AutoCloseable {
           public void handshakeSucceeded(Event e) {
             finish(e.getSSLEngine());
             var end = e.getEndPoint();
-            headers.put(
-                end,
+            if (!end.isOpen()) return;
+            var task =
                 timer.schedule(
                     () -> {
+                      headers.remove(end);
                       end.close();
                     },
                     limits.headerMillis,
-                    TimeUnit.MILLISECONDS));
+                    TimeUnit.MILLISECONDS);
+            var previous = headers.put(end, task);
+            if (previous != null) previous.cancel(false);
+            if (!end.isOpen() && headers.remove(end, task)) task.cancel(false);
           }
 
           public void handshakeFailed(Event e, Throwable failure) {
@@ -140,12 +157,18 @@ final class Boundary implements AutoCloseable {
                 String name = field.getName().toLowerCase(Locale.ROOT);
                 if (name.equals("origin")
                     || name.startsWith("sec-fetch-")
+                    || name.startsWith("sec-websocket-")
+                    || name.equals("upgrade")
                     || name.equals("cookie")
-                    || name.equals("authorization"))
+                    || name.equals("authorization")
+                    || name.equals("proxy-authorization"))
                   throw new Wire.Fault(403, "browser_or_legacy_credentials_refused");
               }
               if (request.getHttpURI().getQuery() != null)
                 throw new Wire.Fault(400, "query_refused");
+              if (request.getMethod().equals("GET")
+                  && (request.getLength() > 0 || request.getHeaders().contains("Transfer-Encoding")))
+                throw new Wire.Fault(400, "body_refused");
               return route.handle(request, response, callback);
             } catch (Wire.Fault e) {
               reply(response, callback, e.status, new Wire.Error(e.code));
@@ -172,8 +195,8 @@ final class Boundary implements AutoCloseable {
 
   byte[] body(Request request, int limit) throws IOException {
     if (!request.getMethod().equals("POST")) throw new Wire.Fault(405, "method_refused");
-    String content = request.getHeaders().get("Content-Type");
-    if (content == null || !content.equalsIgnoreCase("application/json"))
+    var types = request.getHeaders().getValuesList("Content-Type");
+    if (types.size() != 1 || !types.getFirst().equalsIgnoreCase("application/json"))
       throw new Wire.Fault(415, "json_required");
     if (request.getHeaders().contains("Content-Encoding"))
       throw new Wire.Fault(415, "compression_refused");
@@ -205,6 +228,7 @@ final class Boundary implements AutoCloseable {
       byte[] bytes = Wire.bytes(body);
       response.setStatus(status);
       response.getHeaders().put("Content-Type", "application/json");
+      response.getHeaders().put("X-Content-Type-Options", "nosniff");
       response.getHeaders().put("Cache-Control", "no-store");
       response.getHeaders().put("Connection", "close");
       response.write(true, ByteBuffer.wrap(bytes), callback);

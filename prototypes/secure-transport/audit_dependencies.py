@@ -3,6 +3,12 @@ import json
 from pathlib import Path
 import urllib.request
 
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError(f'Unexpected redirect to {newurl}')
+
+
 coordinates = []
 queries = []
 for line in Path(__file__).with_name('gradle.lockfile').read_text().splitlines():
@@ -19,8 +25,14 @@ request = urllib.request.Request(
     json.dumps({'queries': queries}).encode(),
     {'Content-Type': 'application/json'},
 )
-with urllib.request.urlopen(request, timeout=30) as response:
-    results = json.load(response)['results']
+opener = urllib.request.build_opener(NoRedirect())
+with opener.open(request, timeout=30) as response:
+    if response.status != 200:
+        raise RuntimeError(f'Unexpected status {response.status}')
+    payload = response.read(4 * 1024 * 1024 + 1)
+    if len(payload) > 4 * 1024 * 1024:
+        raise RuntimeError('Vulnerability response too large')
+    results = json.loads(payload.decode('utf-8'))['results']
 if len(results) != len(coordinates):
     raise RuntimeError('Incomplete vulnerability response')
 found = False

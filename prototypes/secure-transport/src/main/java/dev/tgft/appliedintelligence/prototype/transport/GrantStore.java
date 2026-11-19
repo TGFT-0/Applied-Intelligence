@@ -42,33 +42,47 @@ final class GrantStore implements AutoCloseable {
     for (var p : Files.getPosixFilePermissions(this.directory))
       if (p.name().startsWith("GROUP_") || p.name().startsWith("OTHERS_"))
         throw new IOException("State directory is not private");
+    Path lockPath = this.directory.resolve("owner.lock");
+    if (Files.exists(lockPath, LinkOption.NOFOLLOW_LINKS)) {
+      if (Files.isSymbolicLink(lockPath) || !Files.isRegularFile(lockPath, LinkOption.NOFOLLOW_LINKS))
+        throw new IOException("Invalid state lock");
+      var lockPermissions =
+          Files.getFileAttributeView(
+              lockPath, PosixFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+      if (lockPermissions != null)
+        for (var p : lockPermissions.readAttributes().permissions())
+          if (p.name().startsWith("GROUP_") || p.name().startsWith("OTHERS_"))
+            throw new IOException("State lock is not private");
+    }
     ownership =
         FileChannel.open(
-            this.directory.resolve("owner.lock"),
-            StandardOpenOption.CREATE,
-            StandardOpenOption.WRITE,
-            LinkOption.NOFOLLOW_LINKS);
+            lockPath,
+            Set.<OpenOption>of(
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS),
+            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
     FileLock acquired = null;
     try {
       acquired = ownership.tryLock();
       if (acquired == null) throw new IOException("State directory busy");
       if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
-        if (Files.isSymbolicLink(file) || Files.size(file) > Wire.MAX_DOCUMENT_BYTES)
+        if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
           throw new IOException("Invalid state");
-        var permissions = Files.getFileAttributeView(file, PosixFileAttributeView.class);
+        var permissions =
+            Files.getFileAttributeView(
+                file, PosixFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
         if (permissions != null)
           for (var p : permissions.readAttributes().permissions())
             if (p.name().startsWith("GROUP_") || p.name().startsWith("OTHERS_"))
               throw new IOException("State file is not private");
-        state = Wire.read(Files.readAllBytes(file), State.class);
-        if (state == null
-            || !host.equals(state.host)
-            || state.grants == null
-            || state.jobs == null
-            || state.grants.size() > 32
-            || state.jobs.size() > 128
-            || state.retired != null && state.retired.size() > 512)
-          throw new IOException("Invalid state");
+        byte[] raw;
+        try (var stateChannel =
+            FileChannel.open(
+                file, Set.<OpenOption>of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+          raw = Channels.newInputStream(stateChannel).readNBytes(Wire.MAX_DOCUMENT_BYTES + 1);
+        }
+        if (raw.length > Wire.MAX_DOCUMENT_BYTES) throw new IOException("Invalid state");
+        state = Wire.read(raw, State.class);
+        validateLoadedState(state, host);
         var jobs = new LinkedHashMap<>(state.jobs);
         jobs.replaceAll(
             (id, j) ->
@@ -83,6 +97,48 @@ final class GrantStore implements AutoCloseable {
       if (acquired != null) acquired.release();
       ownership.close();
       throw new IOException("Cannot open private state", e);
+    }
+  }
+
+  private static void validateLoadedState(State state, String host) throws IOException {
+    if (state == null
+        || !host.equals(state.host)
+        || state.grants == null
+        || state.jobs == null
+        || state.grants.size() > 32
+        || state.jobs.size() > 128
+        || state.retired != null && state.retired.size() > 512)
+      throw new IOException("Invalid state");
+    for (var entry : state.grants.entrySet()) {
+      String k = entry.getKey();
+      Grant g = entry.getValue();
+      if (k == null
+          || g == null
+          || !k.equals(g.fingerprint)
+          || g.certificate == null
+          || g.scopes == null
+          || !Set.of("observe", "simulate").containsAll(g.scopes)
+          || !g.scopes.contains("observe")) throw new IOException("Invalid state");
+    }
+    validateJobs(state.jobs);
+    if (state.retired != null) validateJobs(state.retired);
+  }
+
+  private static void validateJobs(Map<String, Job> jobs) throws IOException {
+    for (var entry : jobs.entrySet()) {
+      String k = entry.getKey();
+      Job j = entry.getValue();
+      if (k == null
+          || j == null
+          || j.owner == null
+          || j.id == null
+          || j.payloadHash == null
+          || j.state == null
+          || !k.equals(key(j.owner, j.id))
+          || !Set.of("running", "completed", "cancelled", "interrupted").contains(j.state)
+          || j.executions < 1
+          || j.ticks < 0) throw new IOException("Invalid state");
+      Wire.uuid(j.id);
     }
   }
 
@@ -128,7 +184,11 @@ final class GrantStore implements AutoCloseable {
   }
 
   synchronized void grant(Grant grant, long now) throws IOException {
-    if (!Set.of("observe", "simulate").containsAll(grant.scopes)
+    if (grant == null
+        || grant.fingerprint == null
+        || grant.certificate == null
+        || grant.scopes == null
+        || !Set.of("observe", "simulate").containsAll(grant.scopes)
         || !grant.scopes.contains("observe")) throw new Wire.Fault(400, "invalid_scope");
     var grants = new LinkedHashMap<>(state.grants);
     if (grants.size() >= 32 && !grants.containsKey(grant.fingerprint)) {
