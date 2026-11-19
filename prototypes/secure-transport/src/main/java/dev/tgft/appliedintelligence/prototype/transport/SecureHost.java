@@ -293,11 +293,11 @@ final class SecureHost implements AutoCloseable {
             || !Wire.same(
                 secretHash,
                 Wire.hash(enrollment.secret.getBytes(java.nio.charset.StandardCharsets.UTF_8)))) {
-          recordFailure();
+          recordFailure(request);
           throw new Wire.Fault(403, "invalid_invitation");
         }
         if (enrollment.csr == null) {
-          recordFailure();
+          recordFailure(request);
           throw new Wire.Fault(400, "invalid_csr");
         }
         byte[] der;
@@ -306,7 +306,7 @@ final class SecureHost implements AutoCloseable {
           der = Base64.getDecoder().decode(enrollment.csr);
           candidate = Pki.verifyCsr(der);
         } catch (Exception e) {
-          recordFailure();
+          recordFailure(request);
           if (e instanceof Wire.Fault f) throw f;
           throw new Wire.Fault(400, "invalid_csr");
         }
@@ -327,19 +327,25 @@ final class SecureHost implements AutoCloseable {
       }
     }
 
-    private void recordFailure() {
-      if (++failures >= MAX_FAILURES && !lockedOut) {
+    private void recordFailure(Request request) {
+      if (++failures >= MAX_FAILURES) {
         lockedOut = true;
-        try {
-          background.execute(
-              () -> {
-                try {
-                  close();
-                } catch (Exception ignored) {
-                }
-              });
-        } catch (RejectedExecutionException ignored) {
-        }
+        // Reject further enrollments immediately, then stop after this response is sent.
+        Request.addCompletionListener(
+            request,
+            failure -> {
+              try {
+                background.execute(
+                    () -> {
+                      try {
+                        close();
+                      } catch (Exception ignored) {
+                      }
+                    });
+              } catch (RejectedExecutionException ignored) {
+                // Host shutdown also closes the enrollment listener.
+              }
+            });
       }
     }
 

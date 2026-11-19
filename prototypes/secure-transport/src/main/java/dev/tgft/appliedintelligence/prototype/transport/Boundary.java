@@ -59,6 +59,12 @@ final class Boundary implements AutoCloseable {
     var pool = new QueuedThreadPool(16, 4);
     pool.setName("prototype-http");
     server = new Server(pool);
+    // Jetty can reject requests before the route handler runs.
+    server.setErrorHandler(
+        (request, response, callback) -> {
+          reply(response, callback, response.getStatus(), new Wire.Error("invalid_request"));
+          return true;
+        });
     var http = new HttpConfiguration();
     http.setPersistentConnectionsEnabled(false);
     http.setRequestHeaderSize(8192);

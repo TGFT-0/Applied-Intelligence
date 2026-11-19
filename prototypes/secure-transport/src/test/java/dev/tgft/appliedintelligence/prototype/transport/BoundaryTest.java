@@ -448,7 +448,12 @@ class BoundaryTest {
               rawResponse.startsWith("HTTP/1.1 400")
                   || rawResponse.startsWith("HTTP/1.1 403")
                   || rawResponse.startsWith("HTTP/1.1 415"));
-          assertTrue(rawResponse.contains("X-Content-Type-Options: nosniff"));
+          assertTrue(
+              rawResponse.lines()
+                  .skip(1)
+                  .takeWhile(line -> !line.isEmpty())
+                  .anyMatch("X-Content-Type-Options: nosniff"::equalsIgnoreCase),
+              rawResponse);
         }
       }
       assertEquals(0, reached.get());
