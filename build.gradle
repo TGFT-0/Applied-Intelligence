@@ -3,7 +3,7 @@ plugins {
     id 'net.neoforged.moddev' version '2.0.74'
 }
 group = 'dev.tgft'
-version = '0.11.2-alpha'
+version = '0.11.3-alpha'
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 neoForge {
     version = project.neoforge_version

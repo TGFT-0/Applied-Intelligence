@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.3-alpha
+
+- Restrict mod messages to private singleplayer worlds and enforce size and nesting limits on JSON payloads.
+- Tighten authentication, response limits, and timeouts for local OpenCode connections.
+- Validate local image paths, Agent settings, and report archive IDs.
+- Harden the loopback transport test prototype and verify the release JAR's SHA-256 digest before publishing.
+
 ## 0.11.2-alpha
 
 - Wait for report archive space and resume after claims. Preserve image indexes for existing books.

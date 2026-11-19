@@ -3,7 +3,7 @@
 在你的ME终端里管理你的agent工作！
 像原版一样下单 查看工作进度 切换cpu（agent）！
 
-[下载 JAR](https://github.com/TGFT-0/Applied-Intelligence/releases/download/v0.11.2-alpha/applied-intelligence-0.11.2-alpha-mc1.21.1-neoforge.jar) · [使用说明](docs/USAGE.md)
+[下载 JAR](https://github.com/TGFT-0/Applied-Intelligence/releases/download/v0.11.3-alpha/applied-intelligence-0.11.3-alpha-mc1.21.1-neoforge.jar) · [使用说明](docs/USAGE.md)
 
 适用于 Minecraft 1.21.1、NeoForge 21.1.169 和 AE2 19.2.19。
 
