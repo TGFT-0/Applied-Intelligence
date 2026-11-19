@@ -42,6 +42,25 @@ final class LocalSettingsScreen extends Screen {
     return Math.max(4, (height - HEIGHT) / 2);
   }
 
+  static String safeDialogDefault(String value) {
+    if (value == null || value.isBlank() || value.length() > 1024) return "";
+    if (value
+        .chars()
+        .anyMatch(
+            c ->
+                Character.isISOControl(c)
+                    || c == '\''
+                    || c == '"'
+                    || c == '`'
+                    || c == '$'
+                    || c == ';'
+                    || c == '|'
+                    || c == '&'
+                    || c == '<'
+                    || c == '>')) return "";
+    return value;
+  }
+
   private void button(Icon icon, String key, int x, int y, Runnable action) {
     var button = iconButton(icon, key, action);
     button.setPosition(left() + x, top() + y);
@@ -159,7 +178,7 @@ final class LocalSettingsScreen extends Screen {
             String path =
                 TinyFileDialogs.tinyfd_openFileDialog(
                     label("local_browse_executable").getString(),
-                    executable.getValue(),
+                    safeDialogDefault(executable.getValue()),
                     (org.lwjgl.PointerBuffer) null,
                     null,
                     false);
@@ -177,7 +196,8 @@ final class LocalSettingsScreen extends Screen {
           try {
             String path =
                 TinyFileDialogs.tinyfd_selectFolderDialog(
-                    label("local_browse_workspace").getString(), workspace.getValue());
+                    label("local_browse_workspace").getString(),
+                    safeDialogDefault(workspace.getValue()));
             if (path != null) workspace.setValue(path);
           } catch (RuntimeException | LinkageError e) {
             status = label("local_dialog_error");

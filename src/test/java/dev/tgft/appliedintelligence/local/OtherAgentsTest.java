@@ -282,6 +282,33 @@ class OtherAgentsTest {
   }
 
   @Test
+  void openCodeRejectsUnauthenticatedLoopbackServerBeforeSendingCredentials() throws Exception {
+    configure("opencode");
+    Files.writeString(root.resolve("no-auth"), "yes");
+    var record = finish(request("Summarize"));
+    assertEquals("failed", record.get("state").getAsString());
+    assertFalse(Files.exists(root.resolve("leaked-auth")));
+    assertFalse(Files.exists(root.resolve("create.json")));
+  }
+
+  @Test
+  void openCodeParseLoopbackBaseRejectsMalformedAndOutOfRangeUrls() throws Exception {
+    assertEquals(
+        "http://127.0.0.1:8080", OpenCodeSession.parseLoopbackBase("http://127.0.0.1:8080/"));
+    for (String bad :
+        List.of(
+            "",
+            "relative",
+            "https://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://127.0.0.1:70000",
+            "http://user@127.0.0.1:8080",
+            "http://127.0.0.1:8080/api",
+            "http://127.0.0.1:8080?x=1"))
+      assertThrows(java.io.IOException.class, () -> OpenCodeSession.parseLoopbackBase(bad));
+  }
+
+  @Test
   void oldConfigDefaultsToCodexAndUnknownProviderCannotOverwriteIt() throws Exception {
     var legacy = new LocalCodex.Config("codex", "workspace", 123);
     assertEquals("codex", legacy.provider());

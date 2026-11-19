@@ -336,4 +336,122 @@ class BoundaryTest {
       assertEquals(0, reached.get());
     }
   }
+
+  @Test
+  void rejectsAuthorityOverridePathsInvalidLeafUsageUpgradeHeadersAndGetBodies() throws Exception {
+    var invitation =
+        new SecureHost.Invitation(
+            "ai-remote-v2-prototype",
+            "https://127.0.0.1:1",
+            "https://127.0.0.1:2",
+            Base64.getEncoder().encodeToString(pki.ca.chain[0].getEncoded()),
+            Wire.random());
+    try (var client = new DeviceClient(invitation)) {
+      byte[] nullCertReply =
+          Wire.bytes(
+              new SecureHost.EnrollmentReply(
+                  "approved", Pki.fingerprint(client.key.getPublic()), null));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> client.accept(new DeviceClient.Reply(200, nullCertReply, null)));
+
+      var caLeafBuilder =
+          new JcaX509v3CertificateBuilder(
+              pki.ca.chain[0],
+              Pki.serial(),
+              Date.from(Instant.now().minusSeconds(60)),
+              Date.from(Instant.now().plusSeconds(3600)),
+              new X500Name("CN=device"),
+              client.key.getPublic());
+      caLeafBuilder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
+      caLeafBuilder.addExtension(
+          Extension.keyUsage,
+          true,
+          new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyCertSign));
+      caLeafBuilder.addExtension(
+          Extension.extendedKeyUsage, false, new ExtendedKeyUsage(KeyPurposeId.id_kp_clientAuth));
+      var caLeaf =
+          caLeafBuilder.build(
+              new JcaContentSignerBuilder("SHA256withECDSA").build(pki.ca.keys.getPrivate()));
+      byte[] badUsageReply =
+          Wire.bytes(
+              new SecureHost.EnrollmentReply(
+                  "approved",
+                  Pki.fingerprint(client.key.getPublic()),
+                  Base64.getEncoder().encodeToString(caLeaf.getEncoded())));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> client.accept(new DeviceClient.Reply(200, badUsageReply, null)));
+    }
+
+    var reached = new AtomicInteger();
+    var ref = new AtomicReference<Boundary>();
+    try (var client = Pki.client(pki.ca.chain[0], null);
+        var boundary =
+            Boundary.open(
+                pki,
+                pki.server,
+                false,
+                Boundary.Limits.defaults(),
+                (q, r, c) -> {
+                  if (q.getMethod().equals("POST")) ref.get().body(q, 1024);
+                  reached.incrementAndGet();
+                  Boundary.reply(r, c, 200, new Wire.Error("ok"));
+                  return true;
+                })) {
+      ref.set(boundary);
+      var device =
+          new DeviceClient(
+              new SecureHost.Invitation(
+                  "ai-remote-v2-prototype",
+                  boundary.endpoint.toString(),
+                  boundary.endpoint.toString(),
+                  Base64.getEncoder().encodeToString(pki.ca.chain[0].getEncoded()),
+                  Wire.random()));
+      var leaf =
+          pki.leaf(
+              device.key,
+              true,
+              Instant.now().minusSeconds(60),
+              Instant.now().plusSeconds(3600),
+              null);
+      device.identity = new Pki.Identity(device.key, leaf.chain[0], pki.ca.chain[0]);
+      device.reconnect(boundary.endpoint);
+      try (device) {
+        for (String badPath :
+            List.of("@evil.invalid/v2/ping", "//evil.invalid/v2/ping", "/v2/ping?x=1", "/v2/ping#f"))
+          assertThrows(IllegalArgumentException.class, () -> device.call(badPath, null));
+      }
+
+      String host = "Host: 127.0.0.1:" + boundary.endpoint.getPort() + "\r\n";
+      for (String rejected :
+          List.of(
+              "GET /v2/ping HTTP/1.1\r\n" + host + "Upgrade: websocket\r\n\r\n",
+              "GET /v2/ping HTTP/1.1\r\n" + host + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+              "GET /v2/ping HTTP/1.1\r\n" + host + "Proxy-Authorization: Basic YWJj\r\n\r\n",
+              "GET /v2/ping HTTP/1.1\r\n" + host + "Content-Length: 4\r\n\r\ntest",
+              "POST /v2/ping HTTP/1.1\r\n"
+                  + host
+                  + "Content-Type: application/json\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}")) {
+        try (var socket =
+            (SSLSocket)
+                client
+                    .sslContext()
+                    .getSocketFactory()
+                    .createSocket("127.0.0.1", boundary.endpoint.getPort())) {
+          socket.startHandshake();
+          socket.setSoTimeout(3000);
+          write(socket, rejected);
+          String rawResponse =
+              new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+          assertTrue(
+              rawResponse.startsWith("HTTP/1.1 400")
+                  || rawResponse.startsWith("HTTP/1.1 403")
+                  || rawResponse.startsWith("HTTP/1.1 415"));
+          assertTrue(rawResponse.contains("X-Content-Type-Options: nosniff"));
+        }
+      }
+      assertEquals(0, reached.get());
+    }
+  }
 }

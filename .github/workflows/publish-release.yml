@@ -11,36 +11,52 @@ on:
         required: true
         type: string
 permissions:
-  contents: write
-  actions: read
+  contents: read
+concurrency:
+  group: publish-release-${{ github.repository }}
+  cancel-in-progress: false
 jobs:
   upload:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.tag }}
       VERIFIED_RUN: ${{ inputs.verified_run }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Check the verified source and draft
+      - id: verify
+        name: Check the verified source and draft
         shell: bash
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha$ ]]
           [[ "$VERIFIED_RUN" =~ ^[0-9]+$ ]]
-          gh api "repos/$GH_REPO/actions/runs/$VERIFIED_RUN" > /tmp/verified-run.json
-          gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > /tmp/draft.json
-          python3 - <<'PY'
-          import json
-          run = json.load(open('/tmp/verified-run.json'))
-          draft = json.load(open('/tmp/draft.json'))
+          gh api "repos/$GH_REPO/actions/runs/$VERIFIED_RUN" > "$RUNNER_TEMP/verified-run.json"
+          gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json isDraft,targetCommitish > "$RUNNER_TEMP/draft.json"
+          sha="$(python3 - <<'PY'
+          import json, os
+          run = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'verified-run.json')))
+          draft = json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'draft.json')))
           assert run['conclusion'] == 'success', 'Verify must pass before upload'
           assert run['path'] == '.github/workflows/verify.yml', 'Use the Verify workflow'
+          assert run['head_repository']['full_name'] == os.environ['GH_REPO'], 'Fork run refused'
+          assert run['head_branch'] == 'main', 'Only main branch runs may be published'
+          assert run['event'] in ('push', 'workflow_dispatch'), 'Unexpected workflow trigger'
           assert draft['isDraft'], 'Only draft releases accept replacement assets'
           assert run['head_sha'] == draft['targetCommitish'], 'Draft and verified source differ'
+          print(run['head_sha'])
           PY
-      - uses: actions/download-artifact@v4
+          )"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ steps.verify.outputs.sha }}
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: applied-intelligence-neoforge
           path: build/libs
@@ -50,6 +66,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          jar="build/libs/applied-intelligence-${version}-mc1.21.1-neoforge.jar"
+          test -f "$jar"
           python3 tools/verify_release.py
-          sha256sum build/libs/*-mc1.21.1-neoforge.jar
-          gh release upload "$RELEASE_TAG" build/libs/*-mc1.21.1-neoforge.jar --clobber
+          sha256sum "$jar"
+          gh release upload "$RELEASE_TAG" "$jar" --repo "$GH_REPO" --clobber

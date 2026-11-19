@@ -895,4 +895,96 @@ class TransportTest {
     assertFalse(captured.contains(secret));
     assertFalse(captured.contains(new String(Wire.bytes(body), StandardCharsets.UTF_8)));
   }
+
+  @Test
+  void enrollmentLocksOutAfterRepeatedInvalidSecrets() throws Exception {
+    var client = pending();
+    var bad =
+        new SecureHost.Enrollment("A".repeat(43), Base64.getEncoder().encodeToString(client.csr));
+    for (int i = 0; i < 5; i++) {
+      assertEquals(
+          403,
+          DeviceClient.send(
+                  client.enrollment, URI.create(client.invitation.enroll() + "/enroll"), bad)
+              .statusCode());
+    }
+    try {
+      assertEquals(403, client.enroll().statusCode());
+    } catch (IOException expected) {
+      // Enrollment listener may have already closed after lockout.
+    }
+    assertThrows(
+        Wire.Fault.class, () -> host.approve(host.pendingFingerprint(), Set.of("observe")));
+  }
+
+  @Test
+  void renewalInvalidatesOldCertificateAndEnforcesRenewalRateLimit() throws Exception {
+    var client = paired("observe");
+    var oldIdentity = client.identity;
+    var renew = client.call("/v2/renew", new SecureHost.Empty());
+    assertEquals(200, renew.statusCode());
+    client.accept(
+        new DeviceClient.Reply(
+            200,
+            Wire.bytes(
+                new SecureHost.EnrollmentReply(
+                    "approved",
+                    Pki.fingerprint(client.key.getPublic()),
+                    Wire.read(renew.body(), SecureHost.EnrollmentReply.class).certificate())),
+            renew.session()));
+    try (var oldClient = Pki.client(pki.ca.chain[0], oldIdentity)) {
+      assertEquals(
+          403,
+          DeviceClient.send(oldClient, URI.create(host.endpoint() + "/v2/ping"), null).statusCode());
+    }
+    for (int i = 0; i < 4; i++) {
+      var nextRenew = client.call("/v2/renew", new SecureHost.Empty());
+      assertEquals(200, nextRenew.statusCode());
+      client.accept(
+          new DeviceClient.Reply(
+              200,
+              Wire.bytes(
+                  new SecureHost.EnrollmentReply(
+                      "approved",
+                      Pki.fingerprint(client.key.getPublic()),
+                      Wire.read(nextRenew.body(), SecureHost.EnrollmentReply.class)
+                          .certificate())),
+              nextRenew.session()));
+    }
+    assertEquals(429, client.call("/v2/renew", new SecureHost.Empty()).statusCode());
+  }
+
+  @Test
+  void controlRequestsEnforcePerDeviceRateLimit() throws Exception {
+    var client = paired("observe");
+    for (int i = 0; i < 20; i++) assertEquals(200, client.call("/v2/ping", null).statusCode());
+    assertEquals(429, client.call("/v2/ping", null).statusCode());
+    clock.now += 60_000L;
+    assertEquals(200, client.call("/v2/ping", null).statusCode());
+  }
+
+  @Test
+  void grantStoreLocksPrivateFilePermissionsAndRejectsTamperedOrSymlinkedState() throws Exception {
+    assertEquals(
+        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+        Files.getPosixFilePermissions(directory.resolve("private/owner.lock")));
+
+    Path tampered = directory.resolve("tampered");
+    try (var store = new GrantStore(tampered, "host")) {
+      store.grant(
+          new GrantStore.Grant("device", "cert", Set.of("observe"), 100, false), 0);
+    }
+    var json = Files.readString(tampered.resolve("state.json")).replace("\"observe\"", "\"admin\"");
+    Files.writeString(tampered.resolve("state.json"), json);
+    assertThrows(IOException.class, () -> new GrantStore(tampered, "host"));
+
+    Path linked = directory.resolve("linked");
+    Files.createDirectories(
+        linked,
+        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+            java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")));
+    Path target = Files.writeString(directory.resolve("outside.json"), "{}");
+    Files.createSymbolicLink(linked.resolve("state.json"), target);
+    assertThrows(IOException.class, () -> new GrantStore(linked, "host"));
+  }
 }

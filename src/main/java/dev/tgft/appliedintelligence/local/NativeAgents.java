@@ -99,6 +99,13 @@ public final class NativeAgents {
   @SubscribeEvent
   public static void stopping(ServerStoppingEvent event) {
     close(event.getServer());
+    dev.tgft.appliedintelligence.Protocol.clearRateLimits();
+  }
+
+  @SubscribeEvent
+  public static void playerLoggedOut(
+      net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedOutEvent event) {
+    dev.tgft.appliedintelligence.Protocol.clearRateLimits(event.getEntity().getUUID());
   }
 
   @SubscribeEvent

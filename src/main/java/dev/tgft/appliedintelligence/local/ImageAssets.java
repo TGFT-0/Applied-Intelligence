@@ -3,7 +3,10 @@ package dev.tgft.appliedintelligence.local;
 import com.google.gson.*;
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.util.*;
 import javax.imageio.ImageIO;
@@ -28,7 +31,9 @@ public final class ImageAssets {
 
   public synchronized JsonArray manifest(String job) throws IOException {
     Path file = directory(job).resolve("images.json");
-    if (!Files.exists(file)) return new JsonArray();
+    if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return new JsonArray();
+    if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
+      throw new IOException("invalid manifest");
     if (Files.size(file) > 16384) throw new IOException("manifest too large");
     var images = JsonParser.parseString(Files.readString(file)).getAsJsonArray();
     if (images.size() > MAX_IMAGES) throw new IOException("too many images");
@@ -36,6 +41,8 @@ public final class ImageAssets {
   }
 
   public JsonObject capture(String job, Path workspace, String path) throws IOException {
+    if (path == null || path.isBlank() || path.startsWith("\\\\") || path.startsWith("//"))
+      throw new IOException("invalid path");
     Path base = workspace.toRealPath();
     Path file = base.resolve(path).normalize();
     // Reject traversal and symlinks, including parent symlinks; don't read outside this workspace.
@@ -46,9 +53,14 @@ public final class ImageAssets {
       cursor = cursor.getParent();
     }
     if (!file.toRealPath().startsWith(base)
-        || !Files.isRegularFile(file)
-        || Files.size(file) > MAX_BYTES) throw new IOException("invalid image file");
-    return capture(job, Files.readAllBytes(file), file.getFileName().toString());
+        || !Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS)
+            .isRegularFile()) throw new IOException("invalid image file");
+    byte[] bytes;
+    try (var in = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+      bytes = in.readNBytes(MAX_BYTES + 1);
+    }
+    if (bytes.length == 0 || bytes.length > MAX_BYTES) throw new IOException("invalid image file");
+    return capture(job, bytes, file.getFileName().toString());
   }
 
   public synchronized JsonObject capture(String job, byte[] bytes, String name) throws IOException {
@@ -174,14 +186,22 @@ public final class ImageAssets {
       if (entry.getAsJsonObject().get("id").getAsString().equals(id)) allowed = true;
     if (!allowed) throw new IOException("image not found");
     Path file = blob(job, id);
-    long length = Files.size(file);
-    if (length < 1 || length > MAX_BYTES || offset < 0 || offset >= length || offset % CHUNK != 0)
-      throw new IOException("invalid chunk");
+    if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
+      throw new IOException("invalid image file");
     byte[] bytes;
-    try (var input = new RandomAccessFile(file.toFile(), "r")) {
-      input.seek(offset);
-      bytes = new byte[(int) Math.min(CHUNK, length - offset)];
-      input.readFully(bytes);
+    long length;
+    try (var channel =
+        FileChannel.open(file, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+      length = channel.size();
+      if (length < 1 || length > MAX_BYTES || offset < 0 || offset >= length || offset % CHUNK != 0)
+        throw new IOException("invalid chunk");
+      int size = (int) Math.min(CHUNK, length - offset);
+      bytes = new byte[size];
+      ByteBuffer buffer = ByteBuffer.wrap(bytes);
+      channel.position(offset);
+      while (buffer.hasRemaining()) {
+        if (channel.read(buffer) < 0) throw new EOFException("unexpected eof");
+      }
     }
     var response = new JsonObject();
     response.addProperty("image", id);

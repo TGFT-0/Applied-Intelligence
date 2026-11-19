@@ -29,7 +29,9 @@ final class DeviceClient implements AutoCloseable {
     this.key = key;
     csr = Pki.csr(key);
     anchor = Pki.decode(Base64.getDecoder().decode(invitation.ca()));
-    if (anchor.getBasicConstraints() < 0 || anchor.getPublicKey().getEncoded().length > 1024)
+    if (anchor.getBasicConstraints() < 0
+        || anchor.getPublicKey().getEncoded().length > 1024
+        || !anchor.getSubjectX500Principal().equals(anchor.getIssuerX500Principal()))
       throw new IllegalArgumentException("Invalid anchor");
     anchor.verify(anchor.getPublicKey());
     boolean[] usage = anchor.getKeyUsage();
@@ -85,6 +87,7 @@ final class DeviceClient implements AutoCloseable {
     if (response.statusCode() != 200) throw new IllegalArgumentException("Enrollment not approved");
     var reply = Wire.read(response.body(), SecureHost.EnrollmentReply.class);
     if (!"approved".equals(reply.state())
+        || reply.certificate() == null
         || !Pki.fingerprint(key.getPublic()).equals(reply.fingerprint()))
       throw new IllegalArgumentException("Wrong enrollment identity");
     var leaf = Pki.decode(Base64.getDecoder().decode(reply.certificate()));
@@ -94,7 +97,10 @@ final class DeviceClient implements AutoCloseable {
     if (!Arrays.equals(key.getPublic().getEncoded(), leaf.getPublicKey().getEncoded())
         || leaf.getBasicConstraints() != -1
         || leaf.getExtensionValue("2.5.29.19") == null
-        || usage == null || usage.length == 0 || !usage[0]
+        || usage == null
+        || usage.length == 0
+        || !usage[0]
+        || (usage.length > 5 && usage[5])
         || !List.of("1.3.6.1.5.5.7.3.2").equals(leaf.getExtendedKeyUsage()))
       throw new IllegalArgumentException("Invalid client certificate");
     identity = new Pki.Identity(key, leaf, anchor);
@@ -103,7 +109,17 @@ final class DeviceClient implements AutoCloseable {
 
   Reply call(String path, Object body) throws Exception {
     if (control == null) throw new IllegalStateException("Not enrolled");
-    return send(control, URI.create(target + path), body);
+    if (path == null || !path.startsWith("/") || path.startsWith("//"))
+      throw new IllegalArgumentException("Invalid control path");
+    URI resolved = URI.create(target + path);
+    if (!"https".equals(resolved.getScheme())
+        || !"127.0.0.1".equals(resolved.getHost())
+        || resolved.getPort() != target.getPort()
+        || resolved.getUserInfo() != null
+        || resolved.getRawQuery() != null
+        || resolved.getFragment() != null)
+      throw new IllegalArgumentException("Invalid control path");
+    return send(control, resolved, body);
   }
 
   void reconnect(URI endpoint) throws Exception {

@@ -53,9 +53,32 @@ final class SecureHost implements AutoCloseable {
           });
   private final Map<String, Set<EndPoint>> connections = new ConcurrentHashMap<>();
   private final Map<String, Stream> streams = new ConcurrentHashMap<>();
+  private final Map<String, RateBucket> controlLimits = new ConcurrentHashMap<>();
+  private final Map<String, RateBucket> renewLimits = new ConcurrentHashMap<>();
   private final Set<String> started = ConcurrentHashMap.newKeySet();
   final AtomicInteger mockWorkerStarts = new AtomicInteger();
   private volatile EnrollmentWindow window;
+
+  private static final class RateBucket {
+    double tokens;
+    long lastRefillMillis;
+
+    RateBucket(int capacity, long now) {
+      this.tokens = capacity;
+      this.lastRefillMillis = now;
+    }
+
+    synchronized boolean tryConsume(int capacity, int perWindow, long windowMillis, long now) {
+      if (now > lastRefillMillis) {
+        double refill = (now - lastRefillMillis) * ((double) perWindow / windowMillis);
+        tokens = Math.min(capacity, tokens + refill);
+        lastRefillMillis = now;
+      }
+      if (tokens < 1.0) return false;
+      tokens -= 1.0;
+      return true;
+    }
+  }
 
   SecureHost(Path state, Pki pki, Clock clock, Boundary.Limits limits) throws Exception {
     this.pki = pki;
@@ -75,13 +98,37 @@ final class SecureHost implements AutoCloseable {
     return control.endpoint;
   }
 
+  private void checkRateLimit(
+      Map<String, RateBucket> buckets, String device, int capacity, int perWindow, long windowMillis) {
+    long now = clock.millis();
+    var bucket = buckets.computeIfAbsent(device, k -> new RateBucket(capacity, now));
+    if (!bucket.tryConsume(capacity, perWindow, windowMillis, now))
+      throw new Wire.Fault(429, "rate_limited");
+  }
+
   private String device(Request request) {
     var tls = (EndPoint.SslSessionData) request.getAttribute(EndPoint.SslSessionData.ATTRIBUTE);
-    if (tls == null || tls.peerCertificates() == null || tls.peerCertificates().length == 0)
+    if (tls == null
+        || tls.peerCertificates() == null
+        || tls.peerCertificates().length == 0
+        || !(tls.peerCertificates()[0] instanceof X509Certificate peer))
       throw new Wire.Fault(403, "certificate_required");
-    String device = Pki.fingerprint(tls.peerCertificates()[0].getPublicKey());
+    try {
+      peer.checkValidity(Date.from(clock.instant()));
+    } catch (java.security.cert.CertificateException e) {
+      throw new Wire.Fault(403, "certificate_expired");
+    }
+    String device = Pki.fingerprint(peer.getPublicKey());
     synchronized (store) {
-      store.require(device, "observe", clock.millis());
+      var grant = store.require(device, "observe", clock.millis());
+      try {
+        byte[] expectedCert = Base64.getDecoder().decode(grant.certificate());
+        if (!MessageDigest.isEqual(expectedCert, peer.getEncoded()))
+          throw new Wire.Fault(403, "certificate_superseded");
+      } catch (IllegalArgumentException | CertificateEncodingException e) {
+        throw new Wire.Fault(403, "not_authorized");
+      }
+      checkRateLimit(controlLimits, device, 20, 120, 60_000L);
       var end = request.getConnectionMetaData().getConnection().getEndPoint();
       var set = connections.computeIfAbsent(device, k -> ConcurrentHashMap.newKeySet());
       synchronized (set) {
@@ -109,13 +156,17 @@ final class SecureHost implements AutoCloseable {
       Wire.read(control.body(request, 16), Empty.class);
       var tls = (EndPoint.SslSessionData) request.getAttribute(EndPoint.SslSessionData.ATTRIBUTE);
       synchronized (store) {
+        checkRateLimit(renewLimits, owner, 5, 5, 60_000L);
         var g = store.require(owner, "observe", clock.millis());
+        Instant notAfter =
+            Instant.ofEpochMilli(Math.min(g.until(), pki.ca.chain[0].getNotAfter().getTime()));
+        if (!notAfter.isAfter(clock.instant())) throw new Wire.Fault(403, "not_authorized");
         var cert =
             pki.certificate(
                 tls.peerCertificates()[0].getPublicKey(),
                 true,
                 clock.instant().minusSeconds(60),
-                Instant.ofEpochMilli(Math.min(g.until(), pki.ca.chain[0].getNotAfter().getTime())),
+                notAfter,
                 null);
         String encoded = Base64.getEncoder().encodeToString(cert.getEncoded());
         store.grant(new GrantStore.Grant(owner, encoded, g.scopes(), g.until(), false), clock.millis());
@@ -180,6 +231,8 @@ final class SecureHost implements AutoCloseable {
     synchronized (store) {
       store.revoke(fingerprint);
       ends = connections.remove(fingerprint);
+      controlLimits.remove(fingerprint);
+      renewLimits.remove(fingerprint);
     }
     var s = streams.remove(fingerprint);
     if (s != null) s.close();
@@ -187,6 +240,7 @@ final class SecureHost implements AutoCloseable {
   }
 
   final class EnrollmentWindow implements AutoCloseable {
+    static final int MAX_FAILURES = 5;
     final Boundary boundary;
     final String secret, secretHash;
     final long expires;
@@ -195,7 +249,8 @@ final class SecureHost implements AutoCloseable {
     String csrHash = "", certificate = "";
     final AtomicBoolean stopped = new AtomicBoolean();
     PublicKey key;
-    boolean approved;
+    boolean approved, lockedOut;
+    int failures;
     long deliveredUntil;
 
     EnrollmentWindow(Duration ttl) throws Exception {
@@ -237,10 +292,24 @@ final class SecureHost implements AutoCloseable {
             || enrollment.secret.length() > 100
             || !Wire.same(
                 secretHash,
-                Wire.hash(enrollment.secret.getBytes(java.nio.charset.StandardCharsets.UTF_8))))
+                Wire.hash(enrollment.secret.getBytes(java.nio.charset.StandardCharsets.UTF_8)))) {
+          recordFailure();
           throw new Wire.Fault(403, "invalid_invitation");
-        byte[] der = Base64.getDecoder().decode(enrollment.csr);
-        PublicKey candidate = Pki.verifyCsr(der);
+        }
+        if (enrollment.csr == null) {
+          recordFailure();
+          throw new Wire.Fault(400, "invalid_csr");
+        }
+        byte[] der;
+        PublicKey candidate;
+        try {
+          der = Base64.getDecoder().decode(enrollment.csr);
+          candidate = Pki.verifyCsr(der);
+        } catch (Exception e) {
+          recordFailure();
+          if (e instanceof Wire.Fault f) throw f;
+          throw new Wire.Fault(400, "invalid_csr");
+        }
         String hash = Wire.hash(der);
         if (!csrHash.isEmpty() && !csrHash.equals(hash))
           throw new Wire.Fault(409, "different_pending_device");
@@ -258,14 +327,33 @@ final class SecureHost implements AutoCloseable {
       }
     }
 
+    private void recordFailure() {
+      if (++failures >= MAX_FAILURES && !lockedOut) {
+        lockedOut = true;
+        try {
+          background.execute(
+              () -> {
+                try {
+                  close();
+                } catch (Exception ignored) {
+                }
+              });
+        } catch (RejectedExecutionException ignored) {
+        }
+      }
+    }
+
     private void checkOpen() {
-      if (stopped.get() || clock.millis() >= expires
+      if (stopped.get()
+          || lockedOut
+          || clock.millis() >= expires
           || approved && clock.millis() >= deliveredUntil)
         throw new Wire.Fault(403, "invalid_invitation");
     }
 
     synchronized void approve(String expected, Set<String> scopes) throws Exception {
       if (stopped.get()
+          || lockedOut
           || approved
           || clock.millis() >= expires
           || key == null
@@ -318,7 +406,7 @@ final class SecureHost implements AutoCloseable {
       response.getHeaders().put("Connection", "close");
     }
 
-    void send() {
+    synchronized void send() {
       if (finished.get()) return;
       try {
         synchronized (store) {
@@ -327,7 +415,8 @@ final class SecureHost implements AutoCloseable {
         var bytes =
             ("id: " + (++sequence) + "\ndata: {\"type\":\"heartbeat\"}\n\n")
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        writeDeadline.set(background.schedule(this::close, 10, TimeUnit.SECONDS));
+        var prev = writeDeadline.getAndSet(background.schedule(this::close, 10, TimeUnit.SECONDS));
+        if (prev != null) prev.cancel(false);
         response.write(
             false,
             ByteBuffer.wrap(bytes),
@@ -356,7 +445,7 @@ final class SecureHost implements AutoCloseable {
       if (deadline != null) deadline.cancel(false);
     }
 
-    void close() {
+    synchronized void close() {
       if (finished.compareAndSet(false, true)) {
         cancelWriteDeadline();
         streams.remove(owner, this);

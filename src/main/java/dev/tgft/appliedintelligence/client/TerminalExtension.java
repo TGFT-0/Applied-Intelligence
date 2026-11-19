@@ -15,6 +15,15 @@ import net.neoforged.neoforge.client.event.ScreenEvent;
 
 @EventBusSubscriber(modid = "appliedintelligence", value = Dist.CLIENT)
 public final class TerminalExtension {
+  static {
+    dev.tgft.appliedintelligence.Protocol.ClientReceiver.allowClientTransport =
+        () -> {
+          var mc = Minecraft.getInstance();
+          var server = mc.getSingleplayerServer();
+          return mc.hasSingleplayerServer() && server != null && !server.isPublished();
+        };
+  }
+
   @SubscribeEvent
   public static void opening(ScreenEvent.Opening event) {
     // Keep AE2's menu, packets, CPU selection, cancel and suspend handling intact.

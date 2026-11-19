@@ -6,7 +6,12 @@ import appeng.menu.me.common.MEStorageMenu;
 import appeng.menu.me.crafting.CraftingStatusMenu;
 import appeng.menu.me.items.PatternEncodingTermMenu;
 import com.google.gson.*;
+import com.google.gson.stream.*;
 import dev.tgft.appliedintelligence.local.NativeAgents;
+import java.io.IOException;
+import java.io.StringReader;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -54,25 +59,42 @@ public final class Protocol {
                     () -> {
                       if (context.player() instanceof ServerPlayer player)
                         handle(player, message.body);
-                      else ClientReceiver.accept(message.body);
+                      else ClientReceiver.acceptRemote(message.body);
                     }));
   }
 
   // Client installs a callback; dedicated servers never load client-only classes.
   public static final class ClientReceiver {
     public static java.util.function.Consumer<String> receiver = ignored -> {};
+    public static volatile java.util.function.BooleanSupplier allowClientTransport = () -> false;
 
     static void accept(String body) {
+      receiver.accept(body);
+    }
+
+    static void acceptRemote(String body) {
+      if (!allowClientTransport.getAsBoolean()) return;
+      try {
+        parseBoundedObject(body, 65536, 16);
+      } catch (RuntimeException e) {
+        return;
+      }
       receiver.accept(body);
     }
   }
 
   public static void send(String action, JsonObject data) {
+    if (!ClientReceiver.allowClientTransport.getAsBoolean()) {
+      JsonObject error = new JsonObject();
+      error.addProperty("error_key", "singleplayer_only");
+      ClientReceiver.accept(JSON.toJson(error));
+      return;
+    }
     JsonObject root = new JsonObject();
     root.addProperty("action", action);
     root.add("data", data);
     String body = JSON.toJson(root);
-    if (body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 30000) {
+    if (body.getBytes(StandardCharsets.UTF_8).length > 30000) {
       JsonObject error = new JsonObject();
       error.addProperty("error_key", "request_too_large");
       ClientReceiver.accept(JSON.toJson(error));
@@ -83,12 +105,93 @@ public final class Protocol {
 
   private static void reply(ServerPlayer p, JsonObject response) {
     String body = JSON.toJson(response);
-    if (body.length() > 60000) {
+    if (body.length() > 60000 || body.getBytes(StandardCharsets.UTF_8).length > 65536) {
       response = new JsonObject();
       response.addProperty("error_key", "response_too_large");
       body = JSON.toJson(response);
     }
     PacketDistributor.sendToPlayer(p, new Message(body));
+  }
+
+  public static void clearRateLimits() {
+    LAST.clear();
+    IMAGE_PENDING.clear();
+    LAST_IMAGE.clear();
+    LAST_QUERY.clear();
+  }
+
+  public static void clearRateLimits(UUID playerId) {
+    if (playerId == null) return;
+    LAST.remove(playerId);
+    IMAGE_PENDING.remove(playerId);
+    LAST_IMAGE.remove(playerId);
+    LAST_QUERY.remove(playerId);
+  }
+
+  static JsonObject parseBoundedObject(String raw, int maxBytes, int maxDepth) {
+    if (raw == null
+        || raw.length() > maxBytes
+        || raw.getBytes(StandardCharsets.UTF_8).length > maxBytes) {
+      throw new RequestFailure("request_too_large");
+    }
+    try (JsonReader reader = new JsonReader(new StringReader(raw))) {
+      reader.setLenient(false);
+      if (reader.peek() != JsonToken.BEGIN_OBJECT) throw new IllegalArgumentException("json_object");
+      JsonObject root = readObject(reader, 1, maxDepth);
+      if (reader.peek() != JsonToken.END_DOCUMENT) throw new IllegalArgumentException("json_trailing");
+      return root;
+    } catch (IOException e) {
+      throw new IllegalArgumentException("invalid_json", e);
+    }
+  }
+
+  private static JsonObject readObject(JsonReader reader, int depth, int maxDepth)
+      throws IOException {
+    if (depth > maxDepth) throw new IllegalArgumentException("json_depth");
+    JsonObject object = new JsonObject();
+    reader.beginObject();
+    while (reader.hasNext()) {
+      String key = reader.nextName();
+      if (object.has(key)) throw new IllegalArgumentException("duplicate_key");
+      object.add(key, readElement(reader, depth + 1, maxDepth));
+    }
+    reader.endObject();
+    return object;
+  }
+
+  private static JsonArray readArray(JsonReader reader, int depth, int maxDepth)
+      throws IOException {
+    if (depth > maxDepth) throw new IllegalArgumentException("json_depth");
+    JsonArray array = new JsonArray();
+    reader.beginArray();
+    while (reader.hasNext()) {
+      array.add(readElement(reader, depth + 1, maxDepth));
+    }
+    reader.endArray();
+    return array;
+  }
+
+  private static JsonElement readElement(JsonReader reader, int depth, int maxDepth)
+      throws IOException {
+    return switch (reader.peek()) {
+      case BEGIN_OBJECT -> readObject(reader, depth, maxDepth);
+      case BEGIN_ARRAY -> readArray(reader, depth, maxDepth);
+      case STRING -> new JsonPrimitive(reader.nextString());
+      case NUMBER -> {
+        String num = reader.nextString();
+        if (num.length() > 64) throw new IllegalArgumentException("json_number");
+        BigDecimal bd = new BigDecimal(num);
+        if (Math.abs(bd.scale()) > 100 || bd.precision() > 40)
+          throw new IllegalArgumentException("json_number");
+        yield new JsonPrimitive(bd);
+      }
+      case BOOLEAN -> new JsonPrimitive(reader.nextBoolean());
+      case NULL -> {
+        reader.nextNull();
+        yield JsonNull.INSTANCE;
+      }
+      default -> throw new IllegalArgumentException("invalid_json");
+    };
   }
 
   private static void error(ServerPlayer p, String text) {
@@ -164,12 +267,24 @@ public final class Protocol {
 
   private static void handle(ServerPlayer p, String body) {
     try {
-      JsonObject root = JsonParser.parseString(body).getAsJsonObject(),
-          data = root.getAsJsonObject("data");
+      if (!NativeAgents.allowed(p)) throw new RequestFailure("singleplayer_only");
+      if (body == null
+          || body.length() > 32768
+          || body.getBytes(StandardCharsets.UTF_8).length > 32768)
+        throw new RequestFailure("request_too_large");
+      JsonObject root = parseBoundedObject(body, 32768, 16);
+      if (!root.has("data")
+          || !root.get("data").isJsonObject()
+          || !root.has("action")
+          || !root.get("action").isJsonPrimitive()
+          || !root.get("action").getAsJsonPrimitive().isString())
+        throw new RequestFailure("invalid_request");
+      JsonObject data = root.getAsJsonObject("data");
       String action = root.get("action").getAsString();
       if (action.equals("report_images") || action.equals("image_chunk")) {
-        if (!NativeAgents.allowed(p)) throw new RequestFailure("singleplayer_only");
-        String execution = UUID.fromString(data.get("id").getAsString()).toString();
+        String rawId = data.get("id").getAsString();
+        String execution = UUID.fromString(rawId).toString();
+        if (!rawId.equals(execution)) throw new RequestFailure("invalid_request");
         boolean terminal =
             p.containerMenu instanceof CraftingStatusMenu && p.containerMenu.stillValid(p);
         boolean book =
@@ -206,9 +321,21 @@ public final class Protocol {
                   server.execute(
                       () -> {
                         if (response.has("error_key")) {
-                          response.add("id", data.get("id"));
-                          response.add("image", data.get("image"));
-                          response.add("offset", data.get("offset"));
+                          response.addProperty("id", execution);
+                          if (data.has("image")
+                              && data.get("image").isJsonPrimitive()
+                              && data.get("image").getAsJsonPrimitive().isString()) {
+                            String image = data.get("image").getAsString();
+                            if (image.length() <= 64) response.addProperty("image", image);
+                          }
+                          if (data.has("offset")
+                              && data.get("offset").isJsonPrimitive()
+                              && data.get("offset").getAsJsonPrimitive().isNumber()) {
+                            try {
+                              response.addProperty("offset", data.get("offset").getAsInt());
+                            } catch (RuntimeException ignored) {
+                            }
+                          }
                         }
                         if (!p.hasDisconnected()) reply(p, response);
                       });
@@ -333,8 +460,13 @@ public final class Protocol {
                 if (server.isStopped()) return;
                 server.execute(
                     () -> {
-                      if (action.equals("steer_job") && data.has("request"))
-                        response.add("steer_request", data.get("request"));
+                      if (action.equals("steer_job")
+                          && data.has("request")
+                          && data.get("request").isJsonPrimitive()
+                          && data.get("request").getAsJsonPrimitive().isString()) {
+                        String requestId = data.get("request").getAsString();
+                        if (requestId.length() <= 64) response.addProperty("steer_request", requestId);
+                      }
                       if (!p.hasDisconnected()) reply(p, response);
                     });
               });

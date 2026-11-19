@@ -167,10 +167,10 @@ public final class LocalCodex implements AutoCloseable {
         || value.workspace() == null
         || value.executable().isBlank()
         || value.executable().length() > 2048
-        || value.executable().contains("\n")
-        || value.executable().contains("\r")
+        || value.executable().chars().anyMatch(Character::isISOControl)
         || value.workspace().isBlank()
         || value.workspace().length() > 2048
+        || value.workspace().chars().anyMatch(Character::isISOControl)
         || value.contextTokens() < 0
         || value.contextTokens() > 2_000_000) throw new Failure("local_config_invalid");
     return new Config(
