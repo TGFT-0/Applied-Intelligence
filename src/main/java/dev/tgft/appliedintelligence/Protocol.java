@@ -6,15 +6,12 @@ import appeng.menu.me.common.MEStorageMenu;
 import appeng.menu.me.crafting.CraftingStatusMenu;
 import appeng.menu.me.items.PatternEncodingTermMenu;
 import com.google.gson.*;
-import com.google.gson.stream.*;
 import dev.tgft.appliedintelligence.local.NativeAgents;
-import java.io.IOException;
-import java.io.StringReader;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
+import io.netty.handler.codec.DecoderException;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -27,13 +24,57 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.CustomData;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.registration.HandlerThread;
 
 public final class Protocol {
   private static final Gson JSON = new GsonBuilder().disableHtmlEscaping().create();
   private static final Map<UUID, Long> LAST = new ConcurrentHashMap<>();
-  private static final java.util.Set<UUID> IMAGE_PENDING = ConcurrentHashMap.newKeySet();
+  private static final java.util.Set<ServerPlayer> IMAGE_PENDING = ConcurrentHashMap.newKeySet();
   private static final Map<UUID, Long> LAST_IMAGE = new ConcurrentHashMap<>();
   private static final Map<UUID, Long> LAST_QUERY = new ConcurrentHashMap<>();
+
+  private static final Map<UUID, Ingress> INGRESS = new ConcurrentHashMap<>();
+  private static final Map<UUID, Long> LAST_REPORT_IMAGES = new ConcurrentHashMap<>();
+  private static final int MAX_REQUEST_BYTES = 32768;
+
+  static final class Ingress {
+    private static final int BURST = 20;
+    private double tokens = BURST;
+    private long updated;
+
+    Ingress(long now) {
+      updated = now;
+    }
+
+    synchronized boolean allow(long now) {
+      if (now > updated) {
+        tokens = Math.min(BURST, tokens + (now - updated) / 25_000_000.0);
+        updated = now;
+      }
+      if (tokens < 1) return false;
+      tokens--;
+      return true;
+    }
+  }
+
+  public record Request(String body) implements CustomPacketPayload {
+    public static final Type<Request> TYPE =
+        new Type<>(ResourceLocation.fromNamespaceAndPath(AppliedIntelligence.ID, "request"));
+    public static final StreamCodec<RegistryFriendlyByteBuf, Request> CODEC =
+        StreamCodec.of((buf, request) -> buf.writeUtf(request.body, MAX_REQUEST_BYTES), buf -> {
+          int start = buf.readerIndex();
+          int length = buf.readVarInt();
+          if (length < 0 || length > MAX_REQUEST_BYTES)
+            throw new DecoderException("Invalid Agent request size");
+          buf.readerIndex(start);
+          return new Request(buf.readUtf(MAX_REQUEST_BYTES));
+        });
+
+    @Override
+    public Type<? extends CustomPacketPayload> type() {
+      return TYPE;
+    }
+  }
 
   public record Message(String body) implements CustomPacketPayload {
     public static final Type<Message> TYPE =
@@ -49,18 +90,18 @@ public final class Protocol {
   }
 
   public static void register(RegisterPayloadHandlersEvent event) {
-    event
-        .registrar("1")
-        .playBidirectional(
-            Message.TYPE,
-            Message.CODEC,
-            (message, context) ->
-                context.enqueueWork(
-                    () -> {
-                      if (context.player() instanceof ServerPlayer player)
-                        handle(player, message.body);
-                      else ClientReceiver.acceptRemote(message.body);
-                    }));
+    var registrar = event.registrar("2").executesOn(HandlerThread.NETWORK);
+    registrar.playToClient(Message.TYPE, Message.CODEC, (message, context) -> {
+      if (context.connection().isMemoryConnection())
+        context.enqueueWork(() -> ClientReceiver.acceptRemote(message.body));
+    });
+    registrar.playToServer(Request.TYPE, Request.CODEC, (request, context) -> {
+      if (!context.connection().isMemoryConnection()
+          || !(context.player() instanceof ServerPlayer player)) return;
+      long now = System.nanoTime();
+      var ingress = INGRESS.computeIfAbsent(player.getUUID(), ignored -> new Ingress(now));
+      if (ingress.allow(now)) context.enqueueWork(() -> handle(player, request.body));
+    });
   }
 
   // Client installs a callback; dedicated servers never load client-only classes.
@@ -100,7 +141,7 @@ public final class Protocol {
       ClientReceiver.accept(JSON.toJson(error));
       return;
     }
-    PacketDistributor.sendToServer(new Message(body));
+    PacketDistributor.sendToServer(new Request(body));
   }
 
   private static void reply(ServerPlayer p, JsonObject response) {
@@ -118,80 +159,26 @@ public final class Protocol {
     IMAGE_PENDING.clear();
     LAST_IMAGE.clear();
     LAST_QUERY.clear();
+    LAST_REPORT_IMAGES.clear();
+    INGRESS.clear();
   }
 
   public static void clearRateLimits(UUID playerId) {
     if (playerId == null) return;
     LAST.remove(playerId);
-    IMAGE_PENDING.remove(playerId);
+    IMAGE_PENDING.removeIf(player -> player.getUUID().equals(playerId));
     LAST_IMAGE.remove(playerId);
     LAST_QUERY.remove(playerId);
+    LAST_REPORT_IMAGES.remove(playerId);
+    INGRESS.remove(playerId);
   }
 
   static JsonObject parseBoundedObject(String raw, int maxBytes, int maxDepth) {
-    if (raw == null
-        || raw.length() > maxBytes
-        || raw.getBytes(StandardCharsets.UTF_8).length > maxBytes) {
+    try {
+      return BoundedJson.object(raw, maxBytes, maxDepth);
+    } catch (BoundedJson.SizeLimit e) {
       throw new RequestFailure("request_too_large");
     }
-    try (JsonReader reader = new JsonReader(new StringReader(raw))) {
-      reader.setLenient(false);
-      if (reader.peek() != JsonToken.BEGIN_OBJECT) throw new IllegalArgumentException("json_object");
-      JsonObject root = readObject(reader, 1, maxDepth);
-      if (reader.peek() != JsonToken.END_DOCUMENT) throw new IllegalArgumentException("json_trailing");
-      return root;
-    } catch (IOException e) {
-      throw new IllegalArgumentException("invalid_json", e);
-    }
-  }
-
-  private static JsonObject readObject(JsonReader reader, int depth, int maxDepth)
-      throws IOException {
-    if (depth > maxDepth) throw new IllegalArgumentException("json_depth");
-    JsonObject object = new JsonObject();
-    reader.beginObject();
-    while (reader.hasNext()) {
-      String key = reader.nextName();
-      if (object.has(key)) throw new IllegalArgumentException("duplicate_key");
-      object.add(key, readElement(reader, depth + 1, maxDepth));
-    }
-    reader.endObject();
-    return object;
-  }
-
-  private static JsonArray readArray(JsonReader reader, int depth, int maxDepth)
-      throws IOException {
-    if (depth > maxDepth) throw new IllegalArgumentException("json_depth");
-    JsonArray array = new JsonArray();
-    reader.beginArray();
-    while (reader.hasNext()) {
-      array.add(readElement(reader, depth + 1, maxDepth));
-    }
-    reader.endArray();
-    return array;
-  }
-
-  private static JsonElement readElement(JsonReader reader, int depth, int maxDepth)
-      throws IOException {
-    return switch (reader.peek()) {
-      case BEGIN_OBJECT -> readObject(reader, depth, maxDepth);
-      case BEGIN_ARRAY -> readArray(reader, depth, maxDepth);
-      case STRING -> new JsonPrimitive(reader.nextString());
-      case NUMBER -> {
-        String num = reader.nextString();
-        if (num.length() > 64) throw new IllegalArgumentException("json_number");
-        BigDecimal bd = new BigDecimal(num);
-        if (Math.abs(bd.scale()) > 100 || bd.precision() > 40)
-          throw new IllegalArgumentException("json_number");
-        yield new JsonPrimitive(bd);
-      }
-      case BOOLEAN -> new JsonPrimitive(reader.nextBoolean());
-      case NULL -> {
-        reader.nextNull();
-        yield JsonNull.INSTANCE;
-      }
-      default -> throw new IllegalArgumentException("invalid_json");
-    };
   }
 
   private static void error(ServerPlayer p, String text) {
@@ -265,14 +252,17 @@ public final class Protocol {
     throw new RequestFailure("blank_required");
   }
 
+  private static boolean allowInterval(Map<UUID, Long> rate, UUID player, long now, long millis) {
+    Long previous = rate.get(player);
+    if (previous != null && now - previous < TimeUnit.MILLISECONDS.toNanos(millis)) return false;
+    rate.put(player, now);
+    return true;
+  }
+
   private static void handle(ServerPlayer p, String body) {
+    if (p.hasDisconnected() || !NativeAgents.allowed(p)) return;
     try {
-      if (!NativeAgents.allowed(p)) throw new RequestFailure("singleplayer_only");
-      if (body == null
-          || body.length() > 32768
-          || body.getBytes(StandardCharsets.UTF_8).length > 32768)
-        throw new RequestFailure("request_too_large");
-      JsonObject root = parseBoundedObject(body, 32768, 16);
+      JsonObject root = parseBoundedObject(body, MAX_REQUEST_BYTES, 16);
       if (!root.has("data")
           || !root.get("data").isJsonObject()
           || !root.has("action")
@@ -282,6 +272,13 @@ public final class Protocol {
       JsonObject data = root.getAsJsonObject("data");
       String action = root.get("action").getAsString();
       if (action.equals("report_images") || action.equals("image_chunk")) {
+        long imageNow = System.nanoTime();
+        if (action.equals("report_images")) {
+          if (!allowInterval(LAST_REPORT_IMAGES, p.getUUID(), imageNow, 150)) return;
+        } else if (!allowInterval(LAST_IMAGE, p.getUUID(), imageNow, 100)
+            || IMAGE_PENDING.contains(p)) {
+          throw new RequestFailure("rate_limited");
+        }
         String rawId = data.get("id").getAsString();
         String execution = UUID.fromString(rawId).toString();
         if (!rawId.equals(execution)) throw new RequestFailure("invalid_request");
@@ -308,15 +305,12 @@ public final class Protocol {
         }
         if (book && !terminal && !archive.containsImage(execution, data.get("image").getAsString()))
           throw new RequestFailure("image_unavailable");
-        long imageNow = System.currentTimeMillis();
-        if (imageNow - LAST_IMAGE.getOrDefault(p.getUUID(), 0L) < 100
-            || !IMAGE_PENDING.add(p.getUUID())) throw new RequestFailure("rate_limited");
-        LAST_IMAGE.put(p.getUUID(), imageNow);
+        IMAGE_PENDING.add(p);
         var server = p.getServer();
         NativeAgents.dispatch(p, action, data)
             .whenComplete(
                 (response, failure) -> {
-                  IMAGE_PENDING.remove(p.getUUID());
+                  IMAGE_PENDING.remove(p);
                   if (failure != null || server.isStopped()) return;
                   server.execute(
                       () -> {
@@ -337,7 +331,7 @@ public final class Protocol {
                             }
                           }
                         }
-                        if (!p.hasDisconnected()) reply(p, response);
+                        if (!p.hasDisconnected() && NativeAgents.allowed(p)) reply(p, response);
                       });
                 });
         return;
@@ -351,19 +345,17 @@ public final class Protocol {
           && p.containerMenu instanceof MEStorageMenu m
           && (m.getGridNode() == null || !m.getGridNode().isActive()))
         throw new RequestFailure("network_offline");
-      long now = System.currentTimeMillis();
+      long now = System.nanoTime();
       boolean query =
           action.equals("agents")
               || action.equals("jobs")
               || action.equals("status_jobs")
               || action.equals("local_settings");
       Map<UUID, Long> rate = query ? LAST_QUERY : LAST;
-      Long last = rate.get(p.getUUID());
-      if (last != null && now - last < 150) {
+      if (!allowInterval(rate, p.getUUID(), now, 150)) {
         if (!query) error(p, "rate_limited");
         return;
       }
-      rate.put(p.getUUID(), now);
       if (action.equals("skill") || action.equals("encode") || action.equals("copy")) {
         if (!NativeAgents.allowed(p)) throw new RequestFailure("singleplayer_only");
         if (!(p.containerMenu instanceof PatternEncodingTermMenu))
@@ -383,9 +375,9 @@ public final class Protocol {
           if (editing && data.has("keep_skills") && data.get("keep_skills").getAsBoolean()) {
             CompoundTag old =
                 source.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
-            selected = JsonParser.parseString(old.getString("skills")).getAsJsonArray();
+            selected = BoundedJson.array(old.getString("skills"), 24000, 1);
             if (old.contains("skill_names"))
-              names = JsonParser.parseString(old.getString("skill_names")).getAsJsonArray();
+              names = BoundedJson.array(old.getString("skill_names"), 24000, 1);
           } else {
             selected = skills(p, data);
             if (data.has("slots")) {
@@ -467,7 +459,7 @@ public final class Protocol {
                         String requestId = data.get("request").getAsString();
                         if (requestId.length() <= 64) response.addProperty("steer_request", requestId);
                       }
-                      if (!p.hasDisconnected()) reply(p, response);
+                      if (!p.hasDisconnected() && NativeAgents.allowed(p)) reply(p, response);
                     });
               });
     } catch (RequestFailure e) {

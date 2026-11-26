@@ -1,6 +1,7 @@
 package dev.tgft.appliedintelligence.local;
 
 import com.google.gson.*;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.io.*;
 import java.net.*;
 import java.net.http.*;
@@ -76,7 +77,7 @@ final class OpenCodeSession implements AgentSession {
             || bytes.length > 2 * 1024 * 1024) throw new IOException("OpenCode request failed");
         return bytes.length == 0
             ? new JsonObject()
-            : JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8)).getAsJsonObject();
+            : BoundedJson.object(new String(bytes, StandardCharsets.UTF_8), 2 * 1024 * 1024, 64);
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -220,7 +221,7 @@ final class OpenCodeSession implements AgentSession {
       String rawBase = null;
       for (int count = 0; count < 1024 && (line = LocalCodex.boundedLine(reader)) != null; count++) {
         try {
-          var frame = JsonParser.parseString(line).getAsJsonObject();
+          var frame = BoundedJson.object(line, LocalCodex.MAX_IPC_BYTES, 64);
           if (frame.has("url")
               && frame.get("url").isJsonPrimitive()
               && frame.get("url").getAsJsonPrimitive().isString()) {
@@ -288,11 +289,11 @@ final class OpenCodeSession implements AgentSession {
       create.add("location", location);
       var permissions = new JsonArray();
       for (String action :
-          List.of("*", "read", "glob", "grep", "list", "question")) {
+          List.of("*", "read", "glob", "grep", "list", "question", "external_directory")) {
         var rule = new JsonObject();
         rule.addProperty("action", action);
         rule.addProperty("resource", "*");
-        rule.addProperty("effect", action.equals("*") ? "deny" : "allow");
+        rule.addProperty("effect", action.equals("*") || action.equals("external_directory") ? "deny" : "allow");
         permissions.add(rule);
       }
       create.add("permissions", permissions);
@@ -416,7 +417,7 @@ final class OpenCodeSession implements AgentSession {
       while ((line = LocalCodex.boundedLine(input)) != null) {
         if (line.isEmpty()) {
           if (!data.isEmpty()) {
-            if (!events.offer(JsonParser.parseString(data.toString()).getAsJsonObject()))
+            if (!events.offer(BoundedJson.object(data.toString(), LocalCodex.MAX_IPC_BYTES, 64)))
               throw new IOException("event overflow");
             data.setLength(0);
           }

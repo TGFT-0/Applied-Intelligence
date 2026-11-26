@@ -1,6 +1,7 @@
 package dev.tgft.appliedintelligence.local;
 
 import com.google.gson.*;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -21,7 +22,7 @@ public final class LocalAgentService implements AutoCloseable {
       try {
         if (Files.size(legacyRoutes) > 8 * 1024 * 1024)
           throw new IOException("Routing history too large");
-        var saved = JsonParser.parseString(Files.readString(legacyRoutes)).getAsJsonObject();
+        var saved = BoundedJson.object(Files.readString(legacyRoutes), 8 * 1024 * 1024, 64);
         var tickets = saved.getAsJsonObject("tickets");
         if (tickets == null) throw new IOException("Invalid routing history");
         for (var entry : tickets.entrySet()) {

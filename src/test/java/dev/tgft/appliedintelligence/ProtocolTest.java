@@ -32,6 +32,22 @@ class ProtocolTest {
   }
 
   @Test
+  void cardArraysAcceptTextWithoutNestedCollections() {
+    assertEquals("第一项", BoundedJson.array("[\"第一项\"]", 64, 1).get(0).getAsString());
+    assertThrows(IllegalArgumentException.class,
+        () -> BoundedJson.array("[[\"第一项\"]]", 64, 1));
+  }
+
+  @Test
+  void ingressAllowsABoundedBurstAndRefillsOverTime() {
+    var ingress = new Protocol.Ingress(0);
+    for (int i = 0; i < 20; i++) assertTrue(ingress.allow(0));
+    assertFalse(ingress.allow(24_000_000L));
+    assertTrue(ingress.allow(25_000_000L));
+    assertFalse(ingress.allow(25_000_000L));
+  }
+
+  @Test
   void clientTransportFailsClosedWhenMultiplayerOrLanDisabled() {
     var previousReceiver = Protocol.ClientReceiver.receiver;
     var previousAllow = Protocol.ClientReceiver.allowClientTransport;

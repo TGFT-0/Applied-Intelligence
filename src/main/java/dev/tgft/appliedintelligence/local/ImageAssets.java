@@ -1,6 +1,7 @@
 package dev.tgft.appliedintelligence.local;
 
 import com.google.gson.*;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -35,7 +36,7 @@ public final class ImageAssets {
     if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
       throw new IOException("invalid manifest");
     if (Files.size(file) > 16384) throw new IOException("manifest too large");
-    var images = JsonParser.parseString(Files.readString(file)).getAsJsonArray();
+    var images = BoundedJson.array(Files.readString(file), 16384, 4);
     if (images.size() > MAX_IMAGES) throw new IOException("too many images");
     return images;
   }
@@ -43,8 +44,12 @@ public final class ImageAssets {
   public JsonObject capture(String job, Path workspace, String path) throws IOException {
     if (path == null || path.isBlank() || path.startsWith("\\\\") || path.startsWith("//"))
       throw new IOException("invalid path");
-    Path base = workspace.toRealPath();
-    Path file = base.resolve(path).normalize();
+    Path configured = workspace.toAbsolutePath().normalize();
+    Path base = configured.toRealPath();
+    Path requested = Path.of(path);
+    if (requested.isAbsolute() && requested.startsWith(configured))
+      requested = configured.relativize(requested);
+    Path file = base.resolve(requested).normalize();
     // Reject traversal and symlinks, including parent symlinks; don't read outside this workspace.
     if (!file.startsWith(base)) throw new IOException("outside workspace");
     Path cursor = file;

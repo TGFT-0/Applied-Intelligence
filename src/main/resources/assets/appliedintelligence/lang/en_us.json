@@ -89,6 +89,7 @@
   "gui.appliedintelligence.local_interrupted": "The world closed or execution was interrupted. The task was not replayed.",
   "gui.appliedintelligence.local_task_timeout": "Agent timed out. Its process stopped.",
   "gui.appliedintelligence.local_execution_failed": "Agent execution failed. Check model, login and workspace.",
+  "gui.appliedintelligence.local_codex_mcp_enabled": "Disable the MCP servers in your local Codex configuration and try again.",
   "gui.appliedintelligence.singleplayer_only": "This version supports private singleplayer worlds only.",
   "gui.appliedintelligence.local_unsaved": "Settings changed; use Save and check on the left.",
   "gui.appliedintelligence.rate_limited": "Too many actions; try again shortly.",

@@ -138,6 +138,16 @@ class LocalCodexTest {
   }
 
   @Test
+  void codexRefusesEnabledMcpBeforeStartingThread() throws Exception {
+    ready();
+    Files.createFile(root.resolve("mcp-enabled"));
+    var result = finish(request("Fixture"));
+    assertEquals("failed", result.get("state").getAsString());
+    assertEquals("local_codex_mcp_enabled", result.get("result_key").getAsString());
+    assertFalse(Files.exists(root.resolve("thread-start.json")));
+  }
+
+  @Test
   void configurationIsInGameAndRequiresNoBridgeSecret() throws Exception {
     assertEquals("local_not_configured", status());
     assertTrue(call("agents").getAsJsonArray("agents").isEmpty());

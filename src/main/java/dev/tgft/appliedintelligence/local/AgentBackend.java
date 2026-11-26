@@ -42,15 +42,14 @@ public enum AgentBackend {
 
   List<String> arguments(int context, String patch) {
     return switch (this) {
-      case CODEX ->
-          context > 0
-              ? List.of(
-                  "app-server",
-                  "-c",
-                  "features.default_mode_request_user_input=true",
-                  "-c",
-                  "model_context_window=" + context)
-              : List.of("app-server", "-c", "features.default_mode_request_user_input=true");
+      case CODEX -> {
+        var options = new ArrayList<>(List.of("app-server",
+            "-c", "features.default_mode_request_user_input=true",
+            "-c", "features.plugins=false",
+            "-c", "web_search=\"disabled\""));
+        if (context > 0) options.addAll(List.of("-c", "model_context_window=" + context));
+        yield options;
+      }
       case PI ->
           List.of(
               "--mode",

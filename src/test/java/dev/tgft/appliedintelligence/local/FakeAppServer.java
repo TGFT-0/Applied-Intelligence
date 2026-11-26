@@ -48,6 +48,11 @@ public final class FakeAppServer {
       var frame = obj(line);
       String method = frame.has("method") ? frame.get("method").getAsString() : "";
       if (method.equals("initialize")) reply(frame.get("id"), "{}");
+      if (method.equals("config/read")) {
+        reply(frame.get("id"), Files.exists(root.resolve("mcp-enabled"))
+            ? "{\"config\":{\"mcp_servers\":{\"fixture\":{\"enabled\":true}}}}"
+            : "{\"config\":{\"mcp_servers\":{}}}");
+      }
       if (method.equals("thread/start")) {
         var params = frame.getAsJsonObject("params");
         if (!params.get("sandbox").getAsString().equals("read-only")

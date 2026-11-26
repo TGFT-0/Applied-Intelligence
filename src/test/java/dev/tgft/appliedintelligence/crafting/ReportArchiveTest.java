@@ -16,7 +16,7 @@ class ReportArchiveTest {
     record.addProperty("state", "completed");
     record.addProperty("result", "Fixture output");
     var image = new JsonObject();
-    image.addProperty("id", "fixture-image");
+    image.addProperty("id", "a".repeat(64));
     image.addProperty("name", "image.png");
     var images = new JsonArray();
     images.add(image);
@@ -31,12 +31,12 @@ class ReportArchiveTest {
     assertFalse(archive.store(spec, record));
     archive.markClaimed(first);
     assertTrue(archive.store(spec, record));
-    assertTrue(archive.containsImage(first, "fixture-image"));
+    assertTrue(archive.containsImage(first, "a".repeat(64)));
     assertEquals(1, archive.images(first).size());
     assertTrue(archive.store(spec, record));
     var saved = archive.save(new CompoundTag(), null);
     var loaded = ReportArchive.load(saved, null);
-    assertTrue(loaded.containsImage(first, "fixture-image"));
+    assertTrue(loaded.containsImage(first, "a".repeat(64)));
     assertTrue(loaded.store(spec, record));
     record.addProperty("id", UUID.randomUUID().toString());
     assertFalse(loaded.store(spec, record));

@@ -55,6 +55,7 @@ final class SecureHost implements AutoCloseable {
   private final Map<String, Stream> streams = new ConcurrentHashMap<>();
   private final Map<String, RateBucket> controlLimits = new ConcurrentHashMap<>();
   private final Map<String, RateBucket> renewLimits = new ConcurrentHashMap<>();
+  private final Map<String, RateBucket> submitLimits = new ConcurrentHashMap<>();
   private final Set<String> started = ConcurrentHashMap.newKeySet();
   final AtomicInteger mockWorkerStarts = new AtomicInteger();
   private volatile EnrollmentWindow window;
@@ -176,15 +177,14 @@ final class SecureHost implements AutoCloseable {
     }
     if (path.equals("/v2/simulations")) {
       var input = Wire.read(control.body(request, 4096), Simulation.class);
-      GrantStore.Job job = store.submit(owner, input.id, input.payload, clock.millis());
-      if (job.state().equals("running") && started.add(owner + ":" + job.id()))
-        background.schedule(
-            () -> {
-              mockWorkerStarts.incrementAndGet();
-              tick(owner, job.id());
-            },
-            50,
-            TimeUnit.MILLISECONDS);
+      GrantStore.Job job;
+      synchronized (store) {
+        job = store.submit(owner, input.id, input.payload, clock.millis(),
+            () -> checkRateLimit(submitLimits, owner, 10, 10, 3_600_000L));
+        String key = owner + ":" + job.id();
+        if (job.state().equals("running") && started.add(key))
+          background.schedule(() -> tick(owner, job.id(), key, true), 50, TimeUnit.MILLISECONDS);
+      }
       Boundary.reply(response, callback, 200, job);
       return true;
     }
@@ -199,13 +199,19 @@ final class SecureHost implements AutoCloseable {
     throw new Wire.Fault(404, "not_found");
   }
 
-  private void tick(String device, String id) {
-    if (closed.get()) return;
-    try {
-      if (store.tick(device, id, clock.millis()))
-        background.schedule(() -> tick(device, id), 50, TimeUnit.MILLISECONDS);
-    } catch (Exception e) {
-      /* Mock job remains non-replayable if persistence fails. */
+  private void tick(String device, String id, String key, boolean first) {
+    synchronized (store) {
+      boolean scheduled = false;
+      try {
+        if (closed.get() || !store.tick(device, id, clock.millis())) return;
+        if (first) mockWorkerStarts.incrementAndGet();
+        background.schedule(() -> tick(device, id, key, false), 50, TimeUnit.MILLISECONDS);
+        scheduled = true;
+      } catch (Exception e) {
+        // Mock work remains non-replayable if persistence fails.
+      } finally {
+        if (!scheduled) started.remove(key);
+      }
     }
   }
 
@@ -233,6 +239,7 @@ final class SecureHost implements AutoCloseable {
       ends = connections.remove(fingerprint);
       controlLimits.remove(fingerprint);
       renewLimits.remove(fingerprint);
+      submitLimits.remove(fingerprint);
     }
     var s = streams.remove(fingerprint);
     if (s != null) s.close();
@@ -240,7 +247,6 @@ final class SecureHost implements AutoCloseable {
   }
 
   final class EnrollmentWindow implements AutoCloseable {
-    static final int MAX_FAILURES = 5;
     final Boundary boundary;
     final String secret, secretHash;
     final long expires;
@@ -249,14 +255,15 @@ final class SecureHost implements AutoCloseable {
     String csrHash = "", certificate = "";
     final AtomicBoolean stopped = new AtomicBoolean();
     PublicKey key;
-    boolean approved, lockedOut;
-    int failures;
+    boolean approved;
+    final RateBucket attempts;
     long deliveredUntil;
 
     EnrollmentWindow(Duration ttl) throws Exception {
       secret = Wire.random();
       secretHash = Wire.hash(secret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
       expires = clock.millis() + ttl.toMillis();
+      attempts = new RateBucket(8, clock.millis());
       boundary = Boundary.open(pki, pki.server, false, limits, this::handle);
       expiry =
           background.schedule(
@@ -284,6 +291,8 @@ final class SecureHost implements AutoCloseable {
       if (!request.getHttpURI().getPath().equals("/enroll")) throw new Wire.Fault(404, "not_found");
       synchronized (this) {
         checkOpen();
+        if (!attempts.tryConsume(8, 2, 1_000L, clock.millis()))
+          throw new Wire.Fault(429, "rate_limited");
       }
       var enrollment = Wire.read(boundary.body(request, 16384), Enrollment.class);
       synchronized (this) {
@@ -293,30 +302,23 @@ final class SecureHost implements AutoCloseable {
             || !Wire.same(
                 secretHash,
                 Wire.hash(enrollment.secret.getBytes(java.nio.charset.StandardCharsets.UTF_8)))) {
-          recordFailure(request);
           throw new Wire.Fault(403, "invalid_invitation");
         }
-        if (enrollment.csr == null) {
-          recordFailure(request);
-          throw new Wire.Fault(400, "invalid_csr");
-        }
-        byte[] der;
-        PublicKey candidate;
+        if (enrollment.csr == null) throw new Wire.Fault(400, "invalid_csr");
         try {
-          der = Base64.getDecoder().decode(enrollment.csr);
-          candidate = Pki.verifyCsr(der);
+          byte[] der = Base64.getDecoder().decode(enrollment.csr);
+          String hash = Wire.hash(der);
+          if (csrHash.isEmpty()) {
+            key = Pki.verifyCsr(der);
+            csrHash = hash;
+            pendingFingerprint = Pki.fingerprint(key);
+          } else if (!csrHash.equals(hash)) {
+            throw new Wire.Fault(409, "different_pending_device");
+          }
+        } catch (Wire.Fault e) {
+          throw e;
         } catch (Exception e) {
-          recordFailure(request);
-          if (e instanceof Wire.Fault f) throw f;
           throw new Wire.Fault(400, "invalid_csr");
-        }
-        String hash = Wire.hash(der);
-        if (!csrHash.isEmpty() && !csrHash.equals(hash))
-          throw new Wire.Fault(409, "different_pending_device");
-        if (csrHash.isEmpty()) {
-          csrHash = hash;
-          key = candidate;
-          pendingFingerprint = Pki.fingerprint(candidate);
         }
         Boundary.reply(
             response,
@@ -327,31 +329,8 @@ final class SecureHost implements AutoCloseable {
       }
     }
 
-    private void recordFailure(Request request) {
-      if (++failures >= MAX_FAILURES) {
-        lockedOut = true;
-        // Reject further enrollments immediately, then stop after this response is sent.
-        Request.addCompletionListener(
-            request,
-            failure -> {
-              try {
-                background.execute(
-                    () -> {
-                      try {
-                        close();
-                      } catch (Exception ignored) {
-                      }
-                    });
-              } catch (RejectedExecutionException ignored) {
-                // Host shutdown also closes the enrollment listener.
-              }
-            });
-      }
-    }
-
     private void checkOpen() {
       if (stopped.get()
-          || lockedOut
           || clock.millis() >= expires
           || approved && clock.millis() >= deliveredUntil)
         throw new Wire.Fault(403, "invalid_invitation");
@@ -359,7 +338,6 @@ final class SecureHost implements AutoCloseable {
 
     synchronized void approve(String expected, Set<String> scopes) throws Exception {
       if (stopped.get()
-          || lockedOut
           || approved
           || clock.millis() >= expires
           || key == null

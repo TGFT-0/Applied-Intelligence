@@ -17,7 +17,7 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.*;
 import org.junit.jupiter.api.io.TempDir;
 
-@EnabledOnOs(OS.LINUX)
+@EnabledOnOs({OS.LINUX, OS.MAC})
 class TransportTest {
   @TempDir Path directory;
   static Pki pki;
@@ -48,6 +48,7 @@ class TransportTest {
 
   @BeforeEach
   void start() throws Exception {
+    directory = directory.toRealPath();
     clock = new MutableClock();
     host = new SecureHost(directory.resolve("private"), pki, clock, Boundary.Limits.defaults());
   }
@@ -897,24 +898,38 @@ class TransportTest {
   }
 
   @Test
-  void enrollmentLocksOutAfterRepeatedInvalidSecrets() throws Exception {
+  void onlyNewSimulationsUseThePerDeviceAdmissionBudget() throws Exception {
+    var client = paired("observe", "simulate");
+    String device = Pki.fingerprint(client.key.getPublic());
+    var first = new SecureHost.Simulation(UUID.randomUUID().toString(), "fixture");
+    for (int i = 0; i < 10; i++) {
+      var order = i == 0 ? first : new SecureHost.Simulation(UUID.randomUUID().toString(), "fixture");
+      assertEquals(200, client.call("/v2/simulations", order).statusCode());
+      synchronized (host.store) {
+        while (host.store.tick(device, order.id(), clock.millis())) {}
+      }
+    }
+    var next = new SecureHost.Simulation(UUID.randomUUID().toString(), "fixture");
+    assertEquals(429, client.call("/v2/simulations", next).statusCode());
+    assertEquals(200, client.call("/v2/simulations", first).statusCode());
+    clock.now += Duration.ofMinutes(6).toMillis();
+    assertEquals(200, client.call("/v2/simulations", next).statusCode());
+  }
+
+  @Test
+  void failedEnrollmentRequestsUseARefillingBudget() throws Exception {
     var client = pending();
     var bad =
         new SecureHost.Enrollment("A".repeat(43), Base64.getEncoder().encodeToString(client.csr));
-    for (int i = 0; i < 5; i++) {
-      assertEquals(
-          403,
-          DeviceClient.send(
-                  client.enrollment, URI.create(client.invitation.enroll() + "/enroll"), bad)
+    for (int i = 0; i < 7; i++) {
+      assertEquals(403,
+          DeviceClient.send(client.enrollment, URI.create(client.invitation.enroll() + "/enroll"), bad)
               .statusCode());
     }
-    try {
-      assertEquals(403, client.enroll().statusCode());
-    } catch (IOException expected) {
-      // Enrollment listener may have already closed after lockout.
-    }
-    assertThrows(
-        Wire.Fault.class, () -> host.approve(host.pendingFingerprint(), Set.of("observe")));
+    assertEquals(429, client.enroll().statusCode());
+    clock.now += 500;
+    host.approve(host.pendingFingerprint(), Set.of("observe"));
+    client.accept(client.enroll());
   }
 
   @Test

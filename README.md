@@ -9,6 +9,8 @@
 
 支持在本机运行 Codex CLI、DeepSeek Harness、Pi 和 OpenCode 2，适用于私有单人世界。
 
+安全修订版要求在 Codex 配置中停用 MCP 服务。模组会关闭 Codex 网页搜索和插件，并拒绝 OpenCode 访问其项目边界以外的目录。
+
 灵感来源于[T3Code](https://github.com/pingdotgg/t3code)和[T3-wow](https://github.com/ryanrhughes/t3code-wow)。
 
 本项目采用 [LGPL-3.0-only](LICENSE)。第三方版权和许可声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

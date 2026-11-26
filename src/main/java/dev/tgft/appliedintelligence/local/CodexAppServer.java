@@ -1,6 +1,7 @@
 package dev.tgft.appliedintelligence.local;
 
 import com.google.gson.*;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -9,6 +10,7 @@ import java.util.concurrent.*;
 
 /** One task, one stdio app-server connection. JSON-RPC replies resume its original turn. */
 final class CodexAppServer implements AgentSession {
+  private final Process process;
   private final BufferedWriter writer;
   private final BufferedReader reader;
   private final Listener listener;
@@ -20,6 +22,7 @@ final class CodexAppServer implements AgentSession {
   private String result;
 
   CodexAppServer(Process process, Listener listener) {
+    this.process = process;
     writer =
         new BufferedWriter(
             new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
@@ -46,7 +49,25 @@ final class CodexAppServer implements AgentSession {
     var value = new JsonObject();
     value.add("id", id);
     value.add("result", result);
-    send(value);
+    var write = new FutureTask<Void>(() -> {
+      send(value);
+      return null;
+    });
+    Thread.ofVirtual().name("ai-answer-send").start(write);
+    try {
+      write.get(5, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      write.cancel(true);
+      LocalCodex.stop(process);
+      throw new IOException("Interrupted while answering Codex", e);
+    } catch (TimeoutException e) {
+      write.cancel(true);
+      LocalCodex.stop(process);
+      throw new IOException("Codex did not accept the answer in time", e);
+    } catch (ExecutionException e) {
+      throw new IOException("Codex answer failed", e.getCause());
+    }
   }
 
   public CompletableFuture<Steering> steer(String requestId, String expectedTurn, String text) {
@@ -105,7 +126,7 @@ final class CodexAppServer implements AgentSession {
   }
 
   private static JsonObject object(String raw) {
-    return JsonParser.parseString(raw).getAsJsonObject();
+    return BoundedJson.object(raw, LocalCodex.MAX_IPC_BYTES, 64);
   }
 
   private void event(String type, String key, JsonElement value) {
@@ -158,6 +179,19 @@ final class CodexAppServer implements AgentSession {
           var initialized = new JsonObject();
           initialized.addProperty("method", "initialized");
           send(initialized);
+          var config = new JsonObject();
+          config.addProperty("cwd", cwd);
+          request(4, "config/read", config);
+        } else if (id.equals("4")) {
+          var config = value.getAsJsonObject("result").getAsJsonObject("config");
+          var servers = config.getAsJsonObject("mcp_servers");
+          if (servers != null) {
+            for (var entry : servers.entrySet()) {
+              var server = entry.getValue().getAsJsonObject();
+              if (!server.has("enabled") || server.get("enabled").getAsBoolean())
+                throw new LocalCodex.Failure("local_codex_mcp_enabled");
+            }
+          }
           var params = new JsonObject();
           params.addProperty("cwd", cwd);
           params.addProperty("sandbox", "read-only");

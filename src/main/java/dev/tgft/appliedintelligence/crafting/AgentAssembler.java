@@ -260,6 +260,13 @@ public final class AgentAssembler extends BlockEntity implements ICraftingMachin
     if (!pattern.isEmpty()) tag.put("pattern", pattern.save(lookup));
   }
 
+  static boolean canRestorePhase(String phase) {
+    return switch (phase) {
+      case "idle", "working", "output", "failed" -> true;
+      default -> false;
+    };
+  }
+
   @Override
   protected void loadAdditional(CompoundTag tag, HolderLookup.Provider lookup) {
     super.loadAdditional(tag, lookup);
@@ -275,6 +282,13 @@ public final class AgentAssembler extends BlockEntity implements ICraftingMachin
     if (!target.equals("local") && !phase.equals("idle") && !phase.equals("output")) {
       phase = "failed";
       error = "remote_disabled";
+    } else if (!canRestorePhase(phase)) {
+      // Only a live AE2 push can grant permission to start a new Agent invocation.
+      phase = "failed";
+      error = "local_interrupted";
     }
+    pending = null;
+    submitting = probing = false;
+    ticks = 0;
   }
 }

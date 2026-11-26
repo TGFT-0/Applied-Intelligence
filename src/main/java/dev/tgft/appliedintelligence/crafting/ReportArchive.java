@@ -1,6 +1,8 @@
 package dev.tgft.appliedintelligence.crafting;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.util.*;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.HolderLookup;
@@ -66,10 +68,7 @@ public final class ReportArchive extends SavedData {
       String name = entry.getString("name");
       String author = entry.contains("author") ? entry.getString("author") : "Codex";
       String text = name + "\n" + author + "\n\n" + entry.getString("result");
-      var images =
-          entry.contains("images")
-              ? com.google.gson.JsonParser.parseString(entry.getString("images")).getAsJsonArray()
-              : new com.google.gson.JsonArray();
+      var images = images(entry.getString("id"));
       int imagePages = Math.min(99, images.size());
       var pages =
           new ArrayList<>(
@@ -137,20 +136,25 @@ public final class ReportArchive extends SavedData {
   }
 
   public boolean containsImage(String execution, String image) {
-    var entry = entries.get(execution);
-    if (entry == null || !entry.contains("images")) return false;
-    return com.google.gson.JsonParser.parseString(entry.getString("images"))
-        .getAsJsonArray()
-        .asList()
-        .stream()
+    return images(execution).asList().stream()
         .anyMatch(e -> e.getAsJsonObject().get("id").getAsString().equals(image));
   }
 
-  public com.google.gson.JsonArray images(String execution) {
+  public JsonArray images(String execution) {
     var entry = entries.get(execution);
-    return entry == null || !entry.contains("images")
-        ? new com.google.gson.JsonArray()
-        : com.google.gson.JsonParser.parseString(entry.getString("images")).getAsJsonArray();
+    if (entry == null || !entry.contains("images")) return new JsonArray();
+    try {
+      var images = BoundedJson.array(entry.getString("images"), 65536, 4);
+      if (images.size() > 8) return new JsonArray();
+      for (var value : images) {
+        var image = value.getAsJsonObject();
+        if (!image.get("id").getAsString().matches("[a-f0-9]{64}")
+            || !image.get("name").isJsonPrimitive()) return new JsonArray();
+      }
+      return images;
+    } catch (RuntimeException e) {
+      return new JsonArray();
+    }
   }
 
   @Override

@@ -1,6 +1,7 @@
 package dev.tgft.appliedintelligence.local;
 
 import com.google.gson.*;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -70,7 +71,7 @@ final class PiSession implements AgentSession {
       while ((line = LocalCodex.boundedLine(reader)) != null) {
         JsonObject frame;
         try {
-          frame = JsonParser.parseString(line).getAsJsonObject();
+          frame = BoundedJson.object(line, LocalCodex.MAX_IPC_BYTES, 64);
         } catch (RuntimeException e) {
           continue;
         }

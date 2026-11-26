@@ -4,7 +4,8 @@ import com.google.gson.JsonObject;
 import dev.tgft.appliedintelligence.AppliedIntelligence;
 import java.util.IdentityHashMap;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.*;
+import java.util.function.Supplier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.LevelResource;
@@ -18,6 +19,24 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 @EventBusSubscriber(modid = AppliedIntelligence.ID)
 public final class NativeAgents {
   private static final Map<MinecraftServer, LocalAgentService> SERVICES = new IdentityHashMap<>();
+
+  private static final ThreadPoolExecutor DISPATCH = new ThreadPoolExecutor(
+      4, 4, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(64),
+      Thread.ofVirtual().name("ai-local-dispatch-", 0).factory());
+
+  static {
+    DISPATCH.allowCoreThreadTimeOut(true);
+  }
+
+  private static CompletableFuture<JsonObject> dispatchAsync(Supplier<JsonObject> action) {
+    try {
+      return CompletableFuture.supplyAsync(action, DISPATCH);
+    } catch (RejectedExecutionException busy) {
+      var response = error("rate_limited");
+      response.addProperty("retryable", true);
+      return CompletableFuture.completedFuture(response);
+    }
+  }
 
   public static boolean allowed(ServerPlayer player) {
     MinecraftServer server = player.getServer();
@@ -41,7 +60,7 @@ public final class NativeAgents {
       return CompletableFuture.completedFuture(error("local_storage_error"));
     }
     JsonObject captured = data.deepCopy();
-    return CompletableFuture.supplyAsync(() -> service.dispatch(action, captured));
+    return dispatchAsync(() -> service.dispatch(action, captured));
   }
 
   public static CompletableFuture<JsonObject> cancelSubmission(
@@ -57,7 +76,7 @@ public final class NativeAgents {
     // Keep the owning service captured. A late callback must not reopen a closing world.
     return cancelSubmission(
         admission,
-        action -> CompletableFuture.supplyAsync(() -> service.dispatch(action, request)));
+        action -> dispatchAsync(() -> service.dispatch(action, request)));
   }
 
   static CompletableFuture<JsonObject> cancelSubmission(
@@ -71,7 +90,11 @@ public final class NativeAgents {
               .handle((response, failure) -> null)
               .thenCompose(ignored -> dispatch.apply("cancel_job"));
     }
-    return cancellation.thenCompose(ignored -> dispatch.apply("release_job"));
+    return cancellation.thenCompose(response -> {
+      if (response.has("retryable") && response.get("retryable").getAsBoolean())
+        return CompletableFuture.completedFuture(response);
+      return dispatch.apply("release_job");
+    });
   }
 
   private static LocalAgentService createService(MinecraftServer server) {

@@ -191,9 +191,12 @@ class OtherAgentsTest {
       assertFalse(rule.get("effect").getAsString().equals("allow")
           && java.util.Set.of("webfetch", "websearch").contains(rule.get("action").getAsString()));
     }
-    assertEquals(
-        "deny",
-        create.getAsJsonArray("permissions").get(0).getAsJsonObject().get("effect").getAsString());
+    var permissions = create.getAsJsonArray("permissions");
+    assertEquals("deny", permissions.get(0).getAsJsonObject().get("effect").getAsString());
+    assertTrue(permissions.asList().stream().map(JsonElement::getAsJsonObject).anyMatch(rule ->
+        rule.get("action").getAsString().equals("external_directory")
+            && rule.get("resource").getAsString().equals("*")
+            && rule.get("effect").getAsString().equals("deny")));
   }
 
   @Test

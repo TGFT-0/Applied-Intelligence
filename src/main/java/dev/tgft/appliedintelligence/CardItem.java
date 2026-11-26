@@ -1,6 +1,5 @@
 package dev.tgft.appliedintelligence;
 
-import com.google.gson.JsonParser;
 import java.util.List;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.component.DataComponents;
@@ -43,7 +42,7 @@ final class CardItem extends Item {
               .withStyle(ChatFormatting.DARK_GRAY));
     if (task)
       try {
-        int count = JsonParser.parseString(tag.getString("skills")).getAsJsonArray().size();
+        int count = BoundedJson.array(tag.getString("skills"), 24000, 1).size();
         lines.add(
             Component.translatable("gui.appliedintelligence.card_snapshot_count", count)
                 .withStyle(ChatFormatting.GRAY));

@@ -1,6 +1,7 @@
 package dev.tgft.appliedintelligence.local;
 
 import com.google.gson.*;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -274,8 +275,7 @@ public final class LocalCodex implements AutoCloseable {
           if (!job.events.isEmpty())
             summary.addProperty(
                 "stage",
-                JsonParser.parseString(job.events.getLast().data)
-                    .getAsJsonObject()
+                BoundedJson.object(job.events.getLast().data, MAX_IPC_BYTES, 16)
                     .get("type")
                     .getAsString());
           summary.addProperty("waiting_input", job.question != null);
@@ -636,7 +636,12 @@ public final class LocalCodex implements AutoCloseable {
     synchronized (lock) {
       if (closed) throw new Failure("local_closed");
       ProcessBuilder builder = new ProcessBuilder(command);
-      builder.environment().keySet().removeIf(key -> key.startsWith("AI_BRIDGE_"));
+      builder.environment().keySet().removeIf(key -> {
+        String upper = key.toUpperCase(Locale.ROOT);
+        return upper.startsWith("AI_BRIDGE_") || upper.startsWith("DYLD_")
+            || Set.of("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "NODE_OPTIONS",
+                "LD_PRELOAD", "LD_AUDIT").contains(upper);
+      });
       builder.environment().putAll(environment);
       if (cwd != null) builder.directory(cwd.toFile());
       if (captureErrors) builder.redirectErrorStream(true);
@@ -653,7 +658,7 @@ public final class LocalCodex implements AutoCloseable {
     }
   }
 
-  private static void stop(Process process) {
+  static void stop(Process process) {
     synchronized (process) {
       List<ProcessHandle> children = process.descendants().toList();
       for (int i = children.size() - 1; i >= 0; i--) children.get(i).destroyForcibly();
@@ -993,6 +998,17 @@ public final class LocalCodex implements AutoCloseable {
         activeJobs.remove(job.id);
         job.server = null;
         job.rpcQuestion = null;
+        if (!closed && job.state.equals("running")) {
+          job.question = null;
+          job.state = "failed";
+          job.result_key = expired.get() ? "local_task_timeout" : "local_execution_failed";
+          job.updated = now();
+          try {
+            persist();
+          } catch (Failure ignored) {
+            // A failed state write must not prevent the process and timer from closing.
+          }
+        }
       }
       if (timeout != null) timeout.cancel(false);
       if (overlay != null)
@@ -1007,12 +1023,14 @@ public final class LocalCodex implements AutoCloseable {
     }
   }
 
+  static final int MAX_IPC_BYTES = ImageAssets.MAX_BYTES * 4 / 3 + 65536;
+
   static String boundedLine(Reader reader) throws IOException {
     StringBuilder line = new StringBuilder();
     boolean oversized = false;
     int c;
     while ((c = reader.read()) != -1 && c != '\n') {
-      if (line.length() < ImageAssets.MAX_BYTES * 4 / 3 + 65536) line.append((char) c);
+      if (line.length() < MAX_IPC_BYTES) line.append((char) c);
       else oversized = true;
     }
     if (c == -1 && line.isEmpty() && !oversized) return null;

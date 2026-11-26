@@ -8,6 +8,7 @@ import appeng.menu.me.common.MEStorageMenu;
 import com.google.gson.*;
 import dev.tgft.appliedintelligence.AppliedIntelligence;
 import dev.tgft.appliedintelligence.Protocol;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import net.minecraft.client.gui.GuiGraphics;
@@ -112,7 +113,7 @@ final class CardEditorScreen extends InventorySubScreen {
           skillsChanged = false;
           try {
             savedSnapshotCount =
-                JsonParser.parseString(tag.getString("skills")).getAsJsonArray().size();
+                BoundedJson.array(tag.getString("skills"), 24000, 1).size();
           } catch (RuntimeException ignored) {
             savedSnapshotCount = 0;
           }

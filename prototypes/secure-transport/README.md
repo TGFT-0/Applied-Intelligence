@@ -30,6 +30,8 @@ python3 prototypes/secure-transport/audit_dependencies.py
 
 测试中的私钥只保存在内存。重启测试复用测试 CA，并不证明真实主机的身份恢复功能。`executions` 记录持久启动意图，不是模型调用次数。模拟任务无需读取任何项目文件。心跳流只是测试流，不提供任务结果。
 
+登记入口限制请求频率，相同证书签名请求复用已通过的验签结果。每台设备的新工单限额为每小时 10 份，初始额度为 10 份。重试已有工单不占用此额度。
+
 原型禁用 HTTP 连接复用，SSE 每次仅等待一帧写入，并设置 10 秒写截止。现有测试未覆盖所有慢消费者和连接洪泛情况。连接上限不能保证公平性，也不能抵抗网络带宽耗尽。
 
 历史保留最近 128 份工单和最多 512 份旧工单回执。旧回执保留 ID、内容摘要与终态。回执达到上限时拒绝新工单，并保留旧回执，避免重试重新执行。
@@ -65,6 +67,8 @@ On 2026-11-18, all 37 tests passed. Tests use real loopback TLS and mock jobs. T
 Release requirements remain incomplete. These include persistent keys, OS key storage, worker isolation, model credential isolation, complete rate limits, and slow-consumer stress tests. Real task events, two-computer tests, platform acceptance, AE2 integration, and independent security review also remain incomplete.
 
 Test keys exist only in memory. Restart tests reuse the test CA. These tests do not prove durable host identity recovery. The `executions` field counts persistent launch intents, not model calls. Mock jobs read no project files. The heartbeat stream contains no task results.
+
+The enrollment endpoint limits requests and reuses the result of a successful certificate signing request check. The prototype limits new jobs to 10 per hour per device, with an initial quota of 10. A retry for an existing job does not use this quota.
 
 The prototype disables HTTP connection reuse. Each SSE stream permits one pending frame and applies a ten-second write deadline. Tests do not cover every slow-consumer or connection-flood scenario. Connection limits do not guarantee fairness or prevent bandwidth exhaustion.
 

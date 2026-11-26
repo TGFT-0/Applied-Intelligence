@@ -9,6 +9,8 @@ Use Minecraft 1.21.1, NeoForge 21.1.169, and AE2 19.2.19.
 
 Run Codex CLI, DeepSeek Harness, Pi, and OpenCode 2 locally in private singleplayer worlds.
 
+The security update requires a Codex configuration with all MCP servers disabled. It disables Codex web search and plugins. The OpenCode adapter denies access to external directories.
+
 Inspired by [T3Code](https://github.com/pingdotgg/t3code) and [T3-wow](https://github.com/ryanrhughes/t3code-wow).
 
 This project uses [LGPL-3.0-only](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party copyright and license notices.

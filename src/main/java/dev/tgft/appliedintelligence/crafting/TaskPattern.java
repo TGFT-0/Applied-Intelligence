@@ -2,8 +2,8 @@ package dev.tgft.appliedintelligence.crafting;
 
 import appeng.api.crafting.*;
 import appeng.api.stacks.*;
-import com.google.gson.*;
 import dev.tgft.appliedintelligence.AppliedIntelligence;
+import dev.tgft.appliedintelligence.BoundedJson;
 import java.util.*;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
@@ -57,8 +57,11 @@ public final class TaskPattern implements IPatternDetails {
     var tag =
         definition.toStack().getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
     var skills = new ArrayList<String>();
-    for (var value : JsonParser.parseString(tag.getString("skills")).getAsJsonArray())
+    for (var value : BoundedJson.array(tag.getString("skills"), 24000, 1)) {
+      if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString())
+        throw new IllegalArgumentException("invalid skill");
       skills.add(value.getAsString());
+    }
     String name = tag.getString("name");
     if (name.isBlank()) name = definition.toStack().getHoverName().getString();
     spec = new TaskSpec(name, tag.getString("prompt"), skills);

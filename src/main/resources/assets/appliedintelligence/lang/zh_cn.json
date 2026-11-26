@@ -89,6 +89,7 @@
   "gui.appliedintelligence.local_interrupted": "世界关闭或执行中断，任务未自动重跑。",
   "gui.appliedintelligence.local_task_timeout": "Agent 执行超时，进程已结束。",
   "gui.appliedintelligence.local_execution_failed": "Agent 执行失败，请检查模型、登录和工作目录。",
+  "gui.appliedintelligence.local_codex_mcp_enabled": "本机 Codex 配置启用了 MCP 服务。请停用这些服务后重试。",
   "gui.appliedintelligence.singleplayer_only": "当前版本仅支持未开放局域网的单人世界。",
   "gui.appliedintelligence.local_unsaved": "配置已修改，请点击左侧“保存并检测”。",
   "gui.appliedintelligence.rate_limited": "操作过快，请稍后重试。",

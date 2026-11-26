@@ -8,7 +8,7 @@ import java.nio.file.attribute.*;
 import java.time.*;
 import java.util.*;
 
-/** Linux-only prototype durable state. Contains public certificates and mock jobs, never keys. */
+/** Prototype durable state on POSIX filesystems. Contains public certificates and mock jobs, never keys. */
 final class GrantStore implements AutoCloseable {
   record Grant(
       String fingerprint, String certificate, Set<String> scopes, long until, boolean revoked) {}
@@ -226,6 +226,11 @@ final class GrantStore implements AutoCloseable {
   }
 
   synchronized Job submit(String device, String id, String payload, long now) throws IOException {
+    return submit(device, id, payload, now, () -> {});
+  }
+
+  synchronized Job submit(String device, String id, String payload, long now, Runnable admit)
+      throws IOException {
     require(device, "simulate", now);
     Wire.uuid(id);
     if (payload == null || payload.length() > 1000) throw new Wire.Fault(400, "invalid_payload");
@@ -253,6 +258,7 @@ final class GrantStore implements AutoCloseable {
       }
     }
     if (jobs.size() >= 128) throw new Wire.Fault(429, "job_limit");
+    admit.run();
     jobs.put(k, job);
     persist(new State(state.host, state.grants, jobs, retired));
     return job;
